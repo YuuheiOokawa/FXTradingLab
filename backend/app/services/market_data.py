@@ -181,11 +181,11 @@ class MarketDataService:
         await self._publish_tick(tick)
         await self._maybe_persist_tick(tick)
         for granularity in ALL_GRANULARITIES:
-            result = self._builder(tick.instrument, granularity).update(tick)
-            if result.closed_candle is not None:
-                await self._persist_candle(result.closed_candle)
-                await self._publish_candle(result.closed_candle, "candle_close")
-            await self._publish_candle(result.candle, "candle_update")
+            candle_result = self._builder(tick.instrument, granularity).update(tick)
+            if candle_result.closed_candle is not None:
+                await self._persist_candle(candle_result.closed_candle)
+                await self._publish_candle(candle_result.closed_candle, "candle_close")
+            await self._publish_candle(candle_result.candle, "candle_update")
 
     async def run(self, instruments: list[str]) -> None:
         instrument_rows = await ensure_instruments(instruments)
