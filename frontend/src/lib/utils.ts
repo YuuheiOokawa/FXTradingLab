@@ -21,3 +21,9 @@ export function formatPct(value: number | null | undefined, digits = 2): string 
   const sign = value > 0 ? "+" : "";
   return `${sign}${value.toFixed(digits)}%`;
 }
+
+/** For magnitudes that are never "changes" (win rate, drawdown, spread) — no +/- sign. */
+export function formatPctPlain(value: number | null | undefined, digits = 2): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return `${value.toFixed(digits)}%`;
+}

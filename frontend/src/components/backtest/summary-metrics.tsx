@@ -1,6 +1,6 @@
 import { StatTile } from "@/components/ui/stat-tile";
 import { cn } from "@/lib/utils";
-import { formatPct, formatPnl } from "@/lib/utils";
+import { formatPct, formatPctPlain, formatPnl } from "@/lib/utils";
 import type { BacktestSummary, BacktestSummaryMetrics } from "@/types/api";
 
 export function OverallStatTiles({ metrics }: { metrics: BacktestSummaryMetrics }) {
@@ -9,12 +9,12 @@ export function OverallStatTiles({ metrics }: { metrics: BacktestSummaryMetrics 
       <StatTile label="総損益" value={formatPnl(metrics.total_pnl)} tone={metrics.total_pnl >= 0 ? "buy" : "sell"} />
       <StatTile label="リターン" value={formatPct(metrics.return_pct)} tone={metrics.return_pct >= 0 ? "buy" : "sell"} />
       <StatTile label="トレード数" value={metrics.trade_count} />
-      <StatTile label="勝率" value={formatPct(metrics.win_rate_pct, 1)} />
+      <StatTile label="勝率" value={formatPctPlain(metrics.win_rate_pct, 1)} />
       <StatTile label="平均利益" value={formatPnl(metrics.avg_win)} tone="buy" />
       <StatTile label="平均損失" value={formatPnl(metrics.avg_loss)} tone="sell" />
       <StatTile label="プロフィットファクター" value={metrics.profit_factor?.toFixed(2) ?? "—"} />
       <StatTile label="シャープレシオ" value={metrics.sharpe_ratio.toFixed(2)} />
-      <StatTile label="最大ドローダウン" value={formatPct(metrics.max_drawdown_pct, 1)} tone="sell" />
+      <StatTile label="最大ドローダウン" value={formatPctPlain(metrics.max_drawdown_pct, 1)} tone="sell" />
       <StatTile label="最大連勝" value={metrics.max_consecutive_wins} tone="buy" />
       <StatTile label="最大連敗" value={metrics.max_consecutive_losses} tone="sell" />
     </div>
@@ -25,10 +25,10 @@ const ROWS: { key: keyof BacktestSummaryMetrics; label: string; format: (v: numb
   { key: "total_pnl", label: "総損益", format: (v) => formatPnl(v), higherIsBetter: true },
   { key: "return_pct", label: "リターン", format: (v) => formatPct(v), higherIsBetter: true },
   { key: "trade_count", label: "トレード数", format: (v) => `${v ?? 0}`, higherIsBetter: true },
-  { key: "win_rate_pct", label: "勝率", format: (v) => formatPct(v, 1), higherIsBetter: true },
+  { key: "win_rate_pct", label: "勝率", format: (v) => formatPctPlain(v, 1), higherIsBetter: true },
   { key: "profit_factor", label: "PF", format: (v) => (v == null ? "—" : v.toFixed(2)), higherIsBetter: true },
   { key: "sharpe_ratio", label: "シャープレシオ", format: (v) => (v == null ? "—" : v.toFixed(2)), higherIsBetter: true },
-  { key: "max_drawdown_pct", label: "最大DD", format: (v) => formatPct(v, 1), higherIsBetter: false },
+  { key: "max_drawdown_pct", label: "最大DD", format: (v) => formatPctPlain(v, 1), higherIsBetter: false },
   { key: "max_consecutive_losses", label: "最大連敗", format: (v) => `${v ?? 0}`, higherIsBetter: false },
 ];
 
