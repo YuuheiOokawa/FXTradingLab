@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     app_env: AppEnv = "development"
     app_api_token: str | None = Field(default=None, description="Bearer token for /api/v1/* and /ws/* in non-dev envs")
     log_level: str = "INFO"
+    # "text" (human-readable, default — good for local dev) | "json" (structured,
+    # one JSON object per line — for log aggregators in real deployments).
+    log_format: str = "text"
+    service_name: str = "fx-trading-lab"
     # Comma-separated allowed CORS origins for non-development environments, e.g.
     # "https://fxlab.example.com". Deliberately NOT wildcarded outside dev — see
     # docs/15_PRODUCTION_READINESS_REVIEW.md "Security". Empty in production means

@@ -5,15 +5,19 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import time
+
 from app.api.deps import get_broker, get_db, get_live_trading_broker
 from app.brokers.base import BrokerAdapter
 from app.core.config import get_settings
 from app.core.redis_client import get_redis
-from app.db.models.journal import Notification
+from app.db.models.journal import Notification, SystemEvent
 from app.services.order_orchestrator import OrderOrchestrator
 from app.services.repo import get_or_create_risk_settings
 
 router = APIRouter(tags=["system"])
+
+_process_start = time.monotonic()
 
 
 @router.get("/system/status")
@@ -27,6 +31,12 @@ async def system_status(
     broker_connected = (await redis.get("system:broker_connected")) == "1"
     risk_settings = await get_or_create_risk_settings(session)
     providers_split = market_data_broker.provider != trading_broker.provider
+
+    last_error_result = await session.execute(
+        select(SystemEvent).where(SystemEvent.severity == "error").order_by(SystemEvent.ts.desc()).limit(1)
+    )
+    last_error = last_error_result.scalar_one_or_none()
+
     return {
         "broker_provider": trading_broker.provider,
         "market_data_provider": market_data_broker.provider,
@@ -37,6 +47,12 @@ async def system_status(
         "auto_mode": risk_settings.auto_mode,
         "live_trading_enabled_env": settings.live_trading_enabled,
         "live_trading_admin_enabled": risk_settings.live_trading_admin_enabled,
+        "api_uptime_seconds": round(time.monotonic() - _process_start, 1),
+        "last_error": (
+            {"ts": last_error.ts.isoformat(), "category": last_error.category, "message": last_error.message}
+            if last_error
+            else None
+        ),
         "app_env": settings.app_env,
         "watchlist": settings.watchlist,
     }

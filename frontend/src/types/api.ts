@@ -152,6 +152,8 @@ export interface SystemStatus {
   auto_mode: "manual" | "semi_auto" | "full_auto";
   live_trading_enabled_env: boolean;
   live_trading_admin_enabled: boolean;
+  api_uptime_seconds: number;
+  last_error: { ts: string; category: string; message: string } | null;
   app_env: string;
   watchlist: string[];
 }

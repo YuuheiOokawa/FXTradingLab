@@ -10,6 +10,13 @@ const AUTO_MODE_LABEL: Record<SystemStatus["auto_mode"], string> = {
   full_auto: "FULL AUTO",
 };
 
+function formatUptime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}時間${m}分`;
+  return `${m}分`;
+}
+
 export function StatusOverview({ status }: { status: SystemStatus }) {
   return (
     <div className="space-y-4">
@@ -27,6 +34,23 @@ export function StatusOverview({ status }: { status: SystemStatus }) {
         <StatTile label="プロバイダー" value={status.broker_provider.toUpperCase()} />
         <StatTile label="環境" value={status.broker_environment === "live" ? "LIVE" : "Practice"} />
         <StatTile label="動作モード" value={AUTO_MODE_LABEL[status.auto_mode]} />
+        <StatTile label="API稼働時間" value={formatUptime(status.api_uptime_seconds)} />
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-4">
+        <div className="mb-2 text-xs font-medium text-muted-foreground">直近のエラー</div>
+        {status.last_error ? (
+          <div className="text-xs">
+            <div className="flex items-center gap-2 text-sell">
+              <AlertTriangle size={14} />
+              <span className="font-medium">[{status.last_error.category}]</span>
+              <span>{new Date(status.last_error.ts).toLocaleString("ja-JP")}</span>
+            </div>
+            <p className="mt-1 text-muted-foreground">{status.last_error.message}</p>
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground">エラーは記録されていません</span>
+        )}
       </div>
 
       {status.providers_split && (

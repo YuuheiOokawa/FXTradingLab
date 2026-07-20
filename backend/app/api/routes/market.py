@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,14 +19,13 @@ router = APIRouter(prefix="/instruments", tags=["market"])
 
 
 class InstrumentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     symbol: str
     display_name: str
     pip_size: float
     price_precision: int
     is_watched: bool
-
-    class Config:
-        from_attributes = True
 
 
 class AddInstrumentIn(BaseModel):

@@ -53,10 +53,28 @@ disabled in local dev for convenience.
 - `GET /analytics/win-rate?dimension=hour|weekday|pair|direction|regime|score_bucket`
 
 ### System
-- `GET /system/status` — broker connectivity, worker heartbeat, DB/Redis health, kill
-  switch state, current mode.
+- `GET /system/status` (under `/api/v1`, bearer-token protected) — broker
+  connectivity, market-data/trading provider split warning, kill switch state,
+  current mode, API process uptime, most recent error.
 - `GET /settings/risk` / `PUT /settings/risk`
 - `GET /notifications`, `POST /notifications/{id}/read`
+
+### Health / readiness / metrics (top-level, NOT under `/api/v1`, unauthenticated —
+these are meant to be hit by an uptime monitor/load balancer/orchestrator, not a
+logged-in operator; see docs/15_PRODUCTION_READINESS_REVIEW.md "Observability")
+- `GET /health` — process liveness only, no dependency checks. Always 200 if the
+  process is up at all.
+- `GET /ready` — checks DB (`SELECT 1`) and Redis (`PING`); 200 if both are up, 503
+  otherwise, with a per-dependency breakdown in the body either way. A market-data
+  broker outage is reported but does **not** flip this to 503 — broker issues are
+  common/transient and the app's non-trading features stay usable through them.
+- `GET /metrics` — plain JSON (not Prometheus exposition format): uptime,
+  broker-connected flag, and per-watchlist-instrument last-tick timestamp/price.
+
+Every response (all routers, not just these three) carries an `X-Request-ID`
+header — echoes an inbound one if present, mints a UUID otherwise — and that same
+ID is attached to every structured log line emitted while handling the request
+(`app/core/request_context.py`), so "why did this order fail" is one grep away.
 
 ### AI explanations (docs/08_SIGNAL_ENGINE.md "AI's role" — explanation only, never
 decides direction; templated fallback when `AI_API_KEY` is unset)

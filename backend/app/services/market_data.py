@@ -84,10 +84,14 @@ class MarketDataService:
             "ts": tick.ts.isoformat(),
         }
         await self._redis.publish(f"ticks:{tick.instrument}", orjson.dumps(payload))
-        await self._redis.hset(
-            f"price:{tick.instrument}:latest",
-            mapping={k: str(v) for k, v in payload.items()},
-        )
+        key = f"price:{tick.instrument}:latest"
+        await self._redis.hset(key, mapping={k: str(v) for k, v in payload.items()})
+        # TTL so this hash can't outlive a dead worker indefinitely — without
+        # this, /metrics (and anything else reading it) would keep showing a
+        # "fresh-looking" last-tick timestamp from before the worker died,
+        # which defeats the point of a staleness check
+        # (docs/15_PRODUCTION_READINESS_REVIEW.md "Observability").
+        await self._redis.expire(key, self._settings.price_stale_seconds * 3)
         await self._redis.set(f"price:{tick.instrument}:stale", "0", ex=self._settings.price_stale_seconds * 3)
 
     async def _publish_candle(self, candle: Candle, event: str) -> None:
