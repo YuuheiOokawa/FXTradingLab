@@ -146,6 +146,20 @@ export interface PaperPosition {
   opened_at: string;
 }
 
+export interface PaperOrderRecord {
+  id: string;
+  instrument: string;
+  direction: Direction;
+  size: number;
+  order_type: "market" | "limit" | "stop";
+  limit_price: number | null;
+  stop_loss: number | null;
+  take_profit: number | null;
+  status: "filled" | "rejected" | "pending" | "cancelled";
+  reject_reason: string | null;
+  created_at: string;
+}
+
 export interface TradeJournalEntry {
   id: string;
   source: "backtest" | "paper" | "demo" | "live";

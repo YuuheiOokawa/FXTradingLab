@@ -12,7 +12,8 @@ from app.brokers.base import BrokerAdapter
 from app.brokers.errors import BrokerError
 from app.brokers.schemas import OrderRequest
 from app.core.request_context import order_context
-from app.db.models.trading import PaperPosition
+from app.db.models.market import Instrument
+from app.db.models.trading import PaperOrder, PaperPosition
 from app.services.order_orchestrator import OrderOrchestrator
 from app.services.repo import get_or_create_paper_account
 from app.services.risk_engine import RiskRejected
@@ -66,6 +67,8 @@ class PaperOrderIn(BaseModel):
     instrument: str
     direction: str
     size: float
+    order_type: str = "market"  # market | limit | stop
+    limit_price: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
     idempotency_key: str
@@ -82,6 +85,8 @@ async def submit_paper_order(
         instrument=body.instrument,
         direction=body.direction,  # type: ignore[arg-type]
         size=body.size,
+        order_type=body.order_type,  # type: ignore[arg-type]
+        limit_price=body.limit_price,
         stop_loss=body.stop_loss,
         take_profit=body.take_profit,
         idempotency_key=body.idempotency_key,
@@ -91,11 +96,58 @@ async def submit_paper_order(
             outcome = await orchestrator.submit_paper_order(session, order)
         except RiskRejected as exc:
             raise HTTPException(422, detail={"error": {"code": exc.code, "message": exc.message}}) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return {
         "approved": outcome.approved,
         "order_id": str(outcome.order.id) if outcome.order else None,
         "position_id": str(outcome.position.id) if outcome.position else None,
+        "status": outcome.order.status if outcome.order else None,
     }
+
+
+@router.get("/orders")
+async def list_paper_orders(status: str | None = None, session: AsyncSession = Depends(get_db)) -> list[dict]:
+    account = await get_or_create_paper_account(session)
+    query = select(PaperOrder).where(PaperOrder.account_id == account.id)
+    if status:
+        query = query.where(PaperOrder.status == status)
+    query = query.order_by(PaperOrder.created_at.desc()).limit(200)
+    result = await session.execute(query)
+    orders = result.scalars().all()
+    out = []
+    for o in orders:
+        instrument = await session.get(Instrument, o.instrument_id)
+        out.append(
+            {
+                "id": str(o.id),
+                "instrument": instrument.symbol if instrument else None,
+                "direction": o.direction,
+                "size": o.size,
+                "order_type": o.order_type,
+                "limit_price": o.limit_price,
+                "stop_loss": o.stop_loss,
+                "take_profit": o.take_profit,
+                "status": o.status,
+                "reject_reason": o.reject_reason,
+                "created_at": o.created_at.isoformat(),
+            }
+        )
+    return out
+
+
+@router.post("/orders/{order_id}/cancel")
+async def cancel_paper_order(
+    order_id: uuid.UUID,
+    broker: BrokerAdapter = Depends(get_broker),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    orchestrator = OrderOrchestrator(broker)
+    try:
+        order = await orchestrator.cancel_pending_order(session, order_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"id": str(order.id), "status": order.status}
 
 
 @router.post("/positions/{position_id}/close")

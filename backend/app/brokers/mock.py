@@ -214,6 +214,10 @@ class MockAdapter(BrokerAdapter):
         return list(self._positions.values())
 
     async def create_order(self, order: OrderRequest) -> OrderResult:
+        if order.order_type != "market":
+            from app.brokers.errors import BrokerOrderRejected
+
+            raise BrokerOrderRejected(f"MockAdapter only supports market orders; got order_type={order.order_type!r}")
         quote = await self.get_current_price(order.instrument)
         fill_price = quote.ask if order.direction == "BUY" else quote.bid
         trade_id = str(uuid.uuid4())

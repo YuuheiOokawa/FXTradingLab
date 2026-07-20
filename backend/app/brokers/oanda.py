@@ -207,6 +207,18 @@ class OandaAdapter(BrokerAdapter):
         return positions
 
     async def create_order(self, order: OrderRequest) -> OrderResult:
+        if order.order_type != "market":
+            # docs/15_PRODUCTION_READINESS_REVIEW.md "Paper Trading": limit/stop
+            # order support was added to Paper Trading's own pending-order
+            # mechanism (OrderOrchestrator.submit_paper_order), which never
+            # reaches this method at all. This adapter only ever built a MARKET
+            # payload below regardless of order.order_type, which would have
+            # silently executed a real limit/stop request as an immediate
+            # market order if that field were ever wired up here without this
+            # guard — refuse explicitly instead.
+            raise BrokerOrderRejected(
+                f"OandaAdapter only supports market orders; got order_type={order.order_type!r}"
+            )
         units = order.size if order.direction == "BUY" else -order.size
         payload: dict = {
             "order": {

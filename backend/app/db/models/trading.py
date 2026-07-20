@@ -81,10 +81,11 @@ class PaperOrder(Base):
     instrument_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("instruments.id"))
     direction: Mapped[str] = mapped_column(String(10))
     size: Mapped[float] = mapped_column(Float)
-    order_type: Mapped[str] = mapped_column(String(10), default="market")
+    order_type: Mapped[str] = mapped_column(String(10), default="market")  # market|limit|stop
+    limit_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # trigger price for limit/stop orders
     stop_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
     take_profit: Mapped[float | None] = mapped_column(Float, nullable=True)
-    status: Mapped[str] = mapped_column(String(15), default="filled")  # filled|rejected
+    status: Mapped[str] = mapped_column(String(15), default="filled")  # filled|rejected|pending|cancelled
     reject_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

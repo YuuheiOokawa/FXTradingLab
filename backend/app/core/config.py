@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     gmo_coin_api_key: str | None = None
     gmo_coin_api_secret: str | None = None
 
+    # --- Paper trading ---
+    # Adverse offset applied to MARKET-order fills only (docs/15_PRODUCTION_
+    # READINESS_REVIEW.md "Paper Trading" — previously had no slippage model
+    # at all, unlike the backtest engine). Limit/stop orders fill exactly at
+    # their trigger price once crossed, matching how a real broker treats a
+    # satisfied limit price differently from a market order's execution risk.
+    paper_slippage_pips: float = 0.2
+
     # --- Market data ---
     poll_interval_ms: int = 2000
     price_stale_seconds: int = 10

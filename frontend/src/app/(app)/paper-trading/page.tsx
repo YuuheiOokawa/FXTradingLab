@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AccountSummary } from "@/components/paper/account-summary";
 import { OrderTicket } from "@/components/paper/order-ticket";
+import { PendingOrdersTable } from "@/components/paper/pending-orders-table";
 import { PositionsTable } from "@/components/paper/positions-table";
 import type { PaperAccount, PaperPosition } from "@/types/api";
 
@@ -46,6 +47,8 @@ export default function PaperTradingPage() {
           </CardContent>
         </Card>
       </div>
+
+      <PendingOrdersTable />
     </div>
   );
 }

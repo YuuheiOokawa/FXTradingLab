@@ -44,6 +44,15 @@ disabled in local dev for convenience.
 - `GET /paper/account` — virtual balance/equity.
 - `GET /paper/positions`
 - `POST /paper/orders` — place a paper order (goes through Risk Engine).
+  `order_type: market|limit|stop`; `market` fills immediately at bid/ask plus
+  `PAPER_SLIPPAGE_PIPS` adverse slippage; `limit`/`stop` require `limit_price`
+  and return `status: "pending"` with `position_id: null` — no position opens
+  until `app/worker/jobs/paper_pending_orders.py` sees the trigger price
+  crossed on a later tick (checked every 10s). See
+  `docs/15_PRODUCTION_READINESS_REVIEW.md` "Paper Trading".
+- `GET /paper/orders?status=pending` — list orders, optionally filtered by
+  status (`pending`/`filled`/`rejected`/`cancelled`).
+- `POST /paper/orders/{id}/cancel` — cancel a still-pending limit/stop order.
 - `POST /paper/positions/{id}/close`
 
 ### Live trading (planned — scaffolded, execution path disabled; see `10_RISK_MANAGEMENT.md`)

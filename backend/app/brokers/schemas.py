@@ -82,7 +82,8 @@ class OrderRequest(BaseModel):
     instrument: str
     direction: Direction
     size: float
-    order_type: Literal["market"] = "market"
+    order_type: Literal["market", "limit", "stop"] = "market"
+    limit_price: float | None = None  # required for order_type in (limit, stop); ignored for market
     stop_loss: float | None = None
     take_profit: float | None = None
     idempotency_key: str

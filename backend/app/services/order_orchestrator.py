@@ -114,6 +114,9 @@ class OrderOrchestrator:
             )
             return OrderOutcome(approved=True, order=dup, position=position_result.scalars().first())
 
+        if order.order_type in ("limit", "stop") and order.limit_price is None:
+            raise ValueError(f"order_type={order.order_type!r} requires limit_price")
+
         risk_settings = await get_or_create_risk_settings(session)
         account = await get_or_create_paper_account(session)
         instrument = await get_instrument_by_symbol(session, order.instrument)
@@ -121,11 +124,22 @@ class OrderOrchestrator:
             raise ValueError(f"unknown instrument {order.instrument}")
 
         pip = pip_size_for(order.instrument)
+        slippage = self._settings.paper_slippage_pips * pip
         try:
             quote = await self._broker.get_current_price(order.instrument)
             broker_connected = True
             spread_pips = quote.spread / pip
-            fill_price = quote.ask if order.direction == "BUY" else quote.bid
+            if order.order_type == "market":
+                # Slippage is an adverse offset - the actual fill is always
+                # slightly worse than the quoted price, same convention the
+                # backtest engine uses (docs/09_BACKTEST_DESIGN.md). Limit/stop
+                # orders fill exactly at their trigger price once crossed (see
+                # the pending-order fill path below), matching how a real
+                # broker treats a satisfied limit price differently from a
+                # market order's execution risk.
+                fill_price = (quote.ask + slippage) if order.direction == "BUY" else (quote.bid - slippage)
+            else:
+                fill_price = 0.0  # not filled yet; set for real when the pending order triggers
         except BrokerConnectionError:
             broker_connected = False
             spread_pips = 0.0
@@ -137,7 +151,11 @@ class OrderOrchestrator:
         open_positions = open_positions_result.scalars().all()
         same_symbol_count = sum(1 for p in open_positions if p.instrument_id == instrument.id)
 
-        risk_amount = abs(fill_price - order.stop_loss) * order.size if order.stop_loss is not None else 0.0
+        # For a pending limit/stop order, fill_price isn't known yet - the
+        # order's own limit_price is the best available reference for a
+        # risk-amount estimate at placement time.
+        risk_reference_price = fill_price if order.order_type == "market" else (order.limit_price or 0.0)
+        risk_amount = abs(risk_reference_price - order.stop_loss) * order.size if order.stop_loss is not None else 0.0
         today_pnl = await _today_realized_pnl(session, "paper")
         equity = account.balance
         daily_loss_pct = max(0.0, -today_pnl) / equity * 100 if equity > 0 else 0.0
@@ -186,11 +204,43 @@ class OrderOrchestrator:
             await session.commit()
             raise RiskRejected(result.code or "REJECTED", result.message or "rejected")
 
+        if order.order_type != "market":
+            # Limit/stop: no position opens yet - the order sits pending
+            # until app/worker/jobs/paper_pending_orders.py sees the trigger
+            # price crossed on a subsequent tick. Design deliberately leaves
+            # room for partial fills later (a pending order could split into
+            # several smaller PaperPosition rows referencing the same
+            # opening_idempotency_key) without changing this shape - not
+            # needed yet, per docs/01_REQUIREMENTS.md's explicit scope.
+            pending_order = PaperOrder(
+                account_id=account.id,
+                instrument_id=instrument.id,
+                direction=order.direction,
+                size=order.size,
+                order_type=order.order_type,
+                limit_price=order.limit_price,
+                stop_loss=order.stop_loss,
+                take_profit=order.take_profit,
+                status="pending",
+                idempotency_key=order.idempotency_key,
+                created_at=datetime.now(UTC),
+            )
+            session.add(pending_order)
+            await _log_event(
+                session,
+                "order",
+                "info",
+                f"paper {order.order_type} order placed (pending): {order.instrument} {order.direction} @ {order.limit_price}",
+            )
+            await session.commit()
+            return OrderOutcome(approved=True, order=pending_order, position=None)
+
         filled_order = PaperOrder(
             account_id=account.id,
             instrument_id=instrument.id,
             direction=order.direction,
             size=order.size,
+            order_type="market",
             stop_loss=order.stop_loss,
             take_profit=order.take_profit,
             status="filled",
@@ -254,6 +304,82 @@ class OrderOrchestrator:
         await _log_event(session, "order", "info", f"paper position closed: {instrument_row.symbol} pnl={pnl:.2f}")
         await session.commit()
         return position
+
+    async def try_fill_pending_order(self, session: AsyncSession, pending_order: PaperOrder) -> PaperPosition | None:
+        """Checks one pending limit/stop order against the current quote and
+        fills it if triggered. Returns None (leaving the order pending,
+        unchanged) if not triggered, the broker is unreachable, or the kill
+        switch is active — a pending order must never silently turn into a
+        real position while the kill switch is on, mirroring the "kill
+        switch checked before anything else" rule entry orders already
+        follow (docs/10_RISK_MANAGEMENT.md)."""
+        if pending_order.status != "pending":
+            return None
+        risk_settings = await get_or_create_risk_settings(session)
+        if risk_settings.kill_switch_active:
+            return None
+
+        instrument_row = await session.get(Instrument, pending_order.instrument_id)
+        try:
+            quote = await self._broker.get_current_price(instrument_row.symbol)
+        except BrokerConnectionError:
+            return None
+
+        pip = pip_size_for(instrument_row.symbol)
+        slippage = self._settings.paper_slippage_pips * pip
+        triggered = False
+        fill_price = 0.0
+        if pending_order.order_type == "limit":
+            # A limit order seeks a BETTER-than-current price and fills
+            # exactly at that price once the market reaches it.
+            if pending_order.direction == "BUY" and quote.ask <= pending_order.limit_price:
+                triggered, fill_price = True, pending_order.limit_price
+            elif pending_order.direction == "SELL" and quote.bid >= pending_order.limit_price:
+                triggered, fill_price = True, pending_order.limit_price
+        elif pending_order.order_type == "stop":
+            # A stop order becomes a market order once the trigger is
+            # crossed, so it carries the same slippage a market order would.
+            if pending_order.direction == "BUY" and quote.ask >= pending_order.limit_price:
+                triggered, fill_price = True, quote.ask + slippage
+            elif pending_order.direction == "SELL" and quote.bid <= pending_order.limit_price:
+                triggered, fill_price = True, quote.bid - slippage
+
+        if not triggered:
+            return None
+
+        position = PaperPosition(
+            account_id=pending_order.account_id,
+            instrument_id=pending_order.instrument_id,
+            direction=pending_order.direction,
+            size=pending_order.size,
+            entry_price=fill_price,
+            stop_loss=pending_order.stop_loss,
+            take_profit=pending_order.take_profit,
+            opened_at=datetime.now(UTC),
+            status="open",
+            opening_idempotency_key=pending_order.idempotency_key,
+        )
+        pending_order.status = "filled"
+        session.add(position)
+        await _log_event(
+            session,
+            "order",
+            "info",
+            f"paper {pending_order.order_type} order filled: {instrument_row.symbol} {pending_order.direction} @ {fill_price:.5f}",
+        )
+        await _notify(
+            session, "order_filled", "指値/逆指値注文が約定しました", f"{instrument_row.symbol} {pending_order.direction} @ {fill_price:.5f}"
+        )
+        await session.commit()
+        return position
+
+    async def cancel_pending_order(self, session: AsyncSession, order_id: uuid.UUID) -> PaperOrder:
+        order = await session.get(PaperOrder, order_id)
+        if order is None or order.status != "pending":
+            raise ValueError("order not pending")
+        order.status = "cancelled"
+        await session.commit()
+        return order
 
     # ------------------------------------------------------------------- live --
 

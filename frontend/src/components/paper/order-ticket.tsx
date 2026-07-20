@@ -15,14 +15,25 @@ import type { Direction, Instrument, PriceSnapshot } from "@/types/api";
 interface OrderResponse {
   approved: boolean;
   order_id: string;
-  position_id: string;
+  position_id: string | null;
+  status: "filled" | "pending" | "rejected" | null;
 }
+
+type OrderType = "market" | "limit" | "stop";
+
+const ORDER_TYPE_LABEL: Record<OrderType, string> = {
+  market: "成行 (Market)",
+  limit: "指値 (Limit)",
+  stop: "逆指値 (Stop)",
+};
 
 export function OrderTicket() {
   const queryClient = useQueryClient();
   const [instrument, setInstrument] = useState("USD_JPY");
   const [direction, setDirection] = useState<Direction>("BUY");
   const [size, setSize] = useState(10000);
+  const [orderType, setOrderType] = useState<OrderType>("market");
+  const [limitPrice, setLimitPrice] = useState<number | "">("");
   const [stopLoss, setStopLoss] = useState<number | "">("");
   const [takeProfit, setTakeProfit] = useState<number | "">("");
   const [lastResult, setLastResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -66,16 +77,24 @@ export function OrderTicket() {
         instrument,
         direction,
         size,
+        order_type: orderType,
+        limit_price: orderType === "market" ? null : limitPrice === "" ? null : Number(limitPrice),
         stop_loss: stopLoss === "" ? null : Number(stopLoss),
         take_profit: takeProfit === "" ? null : Number(takeProfit),
         idempotency_key: crypto.randomUUID(),
       }),
     onSuccess: (data) => {
-      setLastResult({ ok: true, message: `注文が約定しました (position: ${data.position_id.slice(0, 8)}...)` });
+      const message =
+        data.status === "pending"
+          ? `${ORDER_TYPE_LABEL[orderType]}注文を発注しました（価格到達待ち, order: ${data.order_id.slice(0, 8)}...）`
+          : `注文が約定しました (position: ${data.position_id?.slice(0, 8)}...)`;
+      setLastResult({ ok: true, message });
       queryClient.invalidateQueries({ queryKey: ["paper-positions"] });
       queryClient.invalidateQueries({ queryKey: ["paper-account"] });
+      queryClient.invalidateQueries({ queryKey: ["paper-pending-orders"] });
       setStopLoss("");
       setTakeProfit("");
+      setLimitPrice("");
     },
     onError: (err) => {
       setLastResult({ ok: false, message: `${err.code ?? "REJECTED"}: ${err.message}` });
@@ -113,6 +132,33 @@ export function OrderTicket() {
           <Button type="button" variant={direction === "SELL" ? "sell" : "outline"} onClick={() => setDirection("SELL")}>
             SELL {price && `@ ${formatPrice(price.bid, precision)}`}
           </Button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-muted-foreground">注文種別</span>
+            <Select value={orderType} onChange={(e) => setOrderType(e.target.value as OrderType)}>
+              {(Object.keys(ORDER_TYPE_LABEL) as OrderType[]).map((t) => (
+                <option key={t} value={t}>
+                  {ORDER_TYPE_LABEL[t]}
+                </option>
+              ))}
+            </Select>
+          </label>
+          {orderType !== "market" && (
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-muted-foreground">
+                {orderType === "limit" ? "指値価格" : "逆指値トリガー価格"}
+              </span>
+              <Input
+                type="number"
+                step={pipSize}
+                value={limitPrice}
+                onChange={(e) => setLimitPrice(e.target.value === "" ? "" : Number(e.target.value))}
+                placeholder={entryEstimate ? formatPrice(entryEstimate, precision) : "—"}
+              />
+            </label>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
@@ -160,7 +206,7 @@ export function OrderTicket() {
         <Button
           className="w-full"
           variant={direction === "BUY" ? "buy" : "sell"}
-          disabled={mutation.isPending || !stopLoss || !takeProfit}
+          disabled={mutation.isPending || !stopLoss || !takeProfit || (orderType !== "market" && !limitPrice)}
           onClick={() => {
             setLastResult(null);
             mutation.mutate();
