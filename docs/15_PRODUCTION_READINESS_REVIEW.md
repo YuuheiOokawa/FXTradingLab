@@ -79,6 +79,64 @@ gaps that only surfaced from actually running things.
 | Deployment | B | Docker Compose validated end-to-end locally (all 5 services). Dockerfiles, Railway/Vercel config present. No actual cloud deploy was performed from this sandbox (no cloud credentials available) — see `docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md` for the exact operator steps. |
 | Testing | A | 89 backend tests (pytest, real Postgres) + 7 frontend unit tests, all passing; full-stack browser verification performed repeatedly throughout this review, not just once at the end. |
 
+## Update — later in this same review pass
+
+The findings and grades above were the state after the first sweep. Continuing
+through the rest of the originally-requested scope (deployment guide,
+security review, Walk-Forward Analysis, signal outcome history) surfaced more
+real issues, since finding problems by actually building and exercising
+things kept working the same way it did in the first sweep:
+
+10. **A second, more serious secret-leakage bug in the frontend login gate**:
+    the login page compared the submitted token against
+    `NEXT_PUBLIC_APP_API_TOKEN` in its own client component — a value
+    Next.js inlines into whichever bundle references it. Since `/login`
+    must always be reachable by an unauthenticated visitor, anyone who
+    merely loaded that page could read the real shared secret straight out
+    of its own compiled JS, with zero prior knowledge of the token. Verified
+    exploitable end-to-end (built the app, fetched the compiled `/login`
+    chunk, found the plaintext token in it) before fixing it by moving the
+    comparison server-side against a separate, never-client-shipped env var.
+    See `docs/11_SECURITY.md` "Frontend login gate" for the full writeup —
+    this is the most serious individual finding across the whole review.
+11. **No rate limiting on the REST API**, already flagged as an open gap
+    below — closed with a Redis-backed per-token fixed-window limiter.
+12. **`docs/11_SECURITY.md` claimed `pip-audit`/`npm audit` already ran in
+    CI** — verified against the actual workflow file, found neither did;
+    added both for real.
+13. **`docs/13_TEST_STRATEGY.md` overclaimed CI**: said mypy, a Playwright
+    smoke test, and eslint all ran on every PR — verified against
+    `.github/workflows/ci.yml`, found mypy and the Playwright job didn't
+    exist at all, and eslint wasn't wired in either (`npm run lint` existed
+    but nothing called it). Added eslint as a real gating step; corrected
+    the doc's claims about mypy/ruff/Playwright to state honestly what's
+    actually gating vs. still a known gap.
+14. A cosmetic-but-real type-checker finding in `market_data.py::handle_tick`:
+    a variable was reused across two incompatible types in the same
+    function (harmless at runtime, since Python doesn't enforce it, but
+    confusing to read and something `mypy` correctly flagged when actually
+    run). Renamed.
+
+Grade updates from the above and from implementing the two previously-"not
+implemented" items (Walk-Forward Analysis, Signal outcome history):
+
+| Area | Grade | Why |
+|---|---|---|
+| Security | B (held, not raised) | The login-gate fix (#10) closes the most serious finding in this review; rate limiting (#11) closes the other named gap. Held at B rather than raised to A because a materially stronger boundary (routing all API/WS traffic through a backend-for-frontend so the browser never holds the real bearer token at all) remains unbuilt — see `docs/11_SECURITY.md`'s "What this does and does not protect against" for exactly what's still residual. |
+| Backtest | A (unchanged) | **Walk-Forward Analysis now implemented**, see `docs/09_BACKTEST_DESIGN.md`. Genuinely slow for a large parameter grid (documented, capped at 60 combinations) since it's a synchronous request running a full backtest per candidate per window; not persisted to the DB. Never suggests a single "adopt this" parameter set — verified by a test that asserts no such field exists in the response. |
+| Testing | A (unchanged) | 112 backend tests passing (up from 89) against real Postgres, all new features covered; 7 frontend unit tests; full-stack browser verification (including Playwright) performed for every new UI surface added in this pass, not just described. |
+| Deployment | B (unchanged) | `docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md` now exists with concrete steps, verified against Railway/Vercel's actual current (2026) docs via live research rather than assumed; a manual-trigger-only GitHub Actions deploy workflow is prepared. Still B, not A: no actual cloud deploy was executed from this sandbox. |
+
+Signal outcome history (docs/08_SIGNAL_ENGINE.md) is a new capability, not a
+grade change to an existing row — it's covered under "Signal Engine" (still
+A) and "Testing" above.
+
+One pre-existing test was observed to be flaky under load, unrelated to any
+change in this pass: `test_concurrent_duplicate_submissions_result_in_exactly_one_open_position`
+in `tests/test_order_orchestrator.py` (a 5-way concurrent-race test) failed
+once and passed on three immediate retries — not a regression from this
+review, but worth knowing about if it's ever seen failing in CI.
+
 ## What "A" does and doesn't mean here
 
 An **A** means: the code does what it claims, is covered by a test that would
