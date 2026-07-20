@@ -63,9 +63,15 @@ disabled in local dev for convenience.
   anyone traded it.
 
 ### System
-- `GET /system/status` (under `/api/v1`, bearer-token protected) — broker
-  connectivity, market-data/trading provider split warning, kill switch state,
-  current mode, API process uptime, most recent error.
+- `GET /system/status` (under `/api/v1`, bearer-token protected) — full
+  dependency snapshot for the System page: broker connectivity (Market
+  Stream), Database, Redis, Worker (via a 30s heartbeat key with a 90s TTL —
+  `app/worker/jobs/heartbeat.py`, distinguishes "worker never started/
+  crashed" from "market data momentarily quiet"), WebSocket client count
+  (in-process counter, `app/ws/registry.py`), Signal Engine, last price
+  update timestamp, last signal generated (timestamp + score), plus
+  market-data/trading provider split warning, kill switch state, current
+  mode, API process uptime, most recent error.
 - `GET /settings/risk` / `PUT /settings/risk`
 - `GET /notifications`, `POST /notifications/{id}/read`
 

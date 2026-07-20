@@ -56,12 +56,20 @@ notification, so the user always knows *why* an order didn't go through.
    environment, including `production` — set explicitly, never inferred from
    `APP_ENV`).
 2. **Admin setting**: `risk_settings.live_trading_admin_enabled=true`, toggled from
-   the Settings page, itself requiring the user to re-type a confirmation phrase.
+   the Settings page (`components/settings/live-trading-gates.tsx`) — enabling (not
+   disabling) requires typing an exact confirmation phrase into a text field before
+   the button becomes clickable, a deliberate speed bump against a misclick.
 3. **Per-session final confirmation**: each individual LIVE order additionally
-   requires `confirm_live: true` in the request body, which the frontend only sends
-   after a modal the user must explicitly acknowledge (showing size, entry, SL, TP,
-   estimated max loss in JPY) — this is not persisted, so it can't be bypassed by a
-   stale client state.
+   requires `confirm_live: true` in the request body — enforced by
+   `OrderOrchestrator.submit_live_order()`/`check_live_gates()` and tested. **No
+   frontend page sends this yet** — `POST /live/orders` and the gate-status
+   endpoints exist and are correct, but there's no order-submission UI (with the
+   "show size/entry/SL/TP/estimated max loss before confirming" modal this
+   paragraph used to claim existed) to actually call it from a browser. This is a
+   deliberate gap, not an oversight: it's the highest-stakes surface in the app,
+   `GmoCoinAdapter` is still a stub, and shipping order-submission UI with no
+   funded account to test it against would be a bigger risk than the missing
+   feature. See `docs/14_IMPLEMENTATION_PLAN.md`.
 
 `POST /live/orders` checks all three and returns `403 LIVE_TRADING_DISABLED` with
 which condition(s) failed if any is missing. This mirrors the requirement that

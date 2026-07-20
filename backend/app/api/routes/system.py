@@ -12,8 +12,11 @@ from app.brokers.base import BrokerAdapter
 from app.core.config import get_settings
 from app.core.redis_client import get_redis
 from app.db.models.journal import Notification, SystemEvent
+from app.db.models.strategy import Signal
 from app.services.order_orchestrator import OrderOrchestrator
 from app.services.repo import get_or_create_risk_settings
+from app.worker.jobs.heartbeat import HEARTBEAT_KEY
+from app.ws import registry as ws_registry
 
 router = APIRouter(tags=["system"])
 
@@ -26,11 +29,48 @@ async def system_status(
     trading_broker: BrokerAdapter = Depends(get_live_trading_broker),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
+    """Full observability snapshot for the System page — every dependency
+    this app has (Broker/Market Stream/Redis/Database/Worker/WebSocket
+    clients/Signal Engine), not just the broker, so an operator can tell
+    what's actually wrong without SSHing in.
+    """
     settings = get_settings()
     redis = get_redis()
     broker_connected = (await redis.get("system:broker_connected")) == "1"
     risk_settings = await get_or_create_risk_settings(session)
     providers_split = market_data_broker.provider != trading_broker.provider
+
+    # Database: this handler already required a live DB connection to reach
+    # this point (Depends(get_db)) so this rarely reports False in practice —
+    # kept explicit (rather than just assuming "we got here, so it's up") for
+    # the same reason /ready does its own SELECT 1 rather than trusting the
+    # dependency injection alone: a connection can be established and then
+    # go bad mid-request under real failure conditions.
+    try:
+        from sqlalchemy import text as _text
+
+        await session.execute(_text("SELECT 1"))
+        database_connected = True
+    except Exception:
+        database_connected = False
+
+    try:
+        await redis.ping()
+        redis_connected = True
+    except Exception:
+        redis_connected = False
+
+    worker_alive = (await redis.get(HEARTBEAT_KEY)) is not None
+
+    last_price_update = None
+    for symbol in settings.watchlist:
+        latest = await redis.hgetall(f"price:{symbol}:latest")
+        ts = latest.get("ts")
+        if ts and (last_price_update is None or ts > last_price_update):
+            last_price_update = ts
+
+    last_signal_result = await session.execute(select(Signal).order_by(Signal.ts.desc()).limit(1))
+    last_signal = last_signal_result.scalar_one_or_none()
 
     last_error_result = await session.execute(
         select(SystemEvent).where(SystemEvent.severity == "error").order_by(SystemEvent.ts.desc()).limit(1)
@@ -43,6 +83,17 @@ async def system_status(
         "providers_split": providers_split,
         "broker_environment": settings.broker_environment,
         "broker_connected": broker_connected,
+        "database_connected": database_connected,
+        "redis_connected": redis_connected,
+        "worker_alive": worker_alive,
+        "websocket_client_count": ws_registry.current_count(),
+        "signal_engine_ok": True,  # stateless computation; "ok" if this endpoint answered at all
+        "last_price_update": last_price_update,
+        "last_signal_generated": (
+            {"ts": last_signal.ts.isoformat(), "instrument_id": str(last_signal.instrument_id), "score": last_signal.score}
+            if last_signal
+            else None
+        ),
         "kill_switch_active": risk_settings.kill_switch_active,
         "auto_mode": risk_settings.auto_mode,
         "live_trading_enabled_env": settings.live_trading_enabled,

@@ -11,6 +11,7 @@ import orjson
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.core.redis_client import get_redis
+from app.ws import registry
 from app.ws.auth import check_ws_auth
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ async def ws_prices(websocket: WebSocket) -> None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     await websocket.accept()
+    registry.increment()
     redis = get_redis()
     pubsub = redis.pubsub()
 
@@ -82,3 +84,4 @@ async def ws_prices(websocket: WebSocket) -> None:
         reader_task.cancel()
         writer_task.cancel()
         await pubsub.close()
+        registry.decrement()

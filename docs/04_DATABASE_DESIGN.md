@@ -2,7 +2,10 @@
 
 Full column-level definitions live in the SQLAlchemy models under
 `backend/app/db/models/`; this document covers the schema's shape and rationale.
-See `backend/alembic/versions/0001_initial.py` for the migration.
+See `backend/alembic/versions/` for the migration history (initial schema is
+`3974ddc6a822_initial_schema.py` — alembic generates hash-based revision IDs,
+not sequential numbers; this doc previously referenced a nonexistent
+`0001_initial.py`, corrected during the production-readiness re-review).
 
 ## Entity groups
 
@@ -27,6 +30,12 @@ See `backend/alembic/versions/0001_initial.py` for the migration.
   class can run multiple parameter sets (e.g. different EMA periods) without new code.
 - **signals** — a computed signal snapshot: instrument, timeframe, strategy_config,
   direction, score (0-100), regime, JSONB `reasons` (the ✓/△/✗ breakdown), timestamp.
+  Also carries outcome-tracking columns (`entry_price`, `outcome_computed_at`,
+  `max_favorable_pips`, `max_adverse_pips`, `price_after_horizon_pips`,
+  `tp_reached`, `sl_reached`) populated by `app/worker/jobs/signal_capture.py` /
+  `signal_outcome.py` — see `docs/08_SIGNAL_ENGINE.md` "Signal outcome history".
+  A unique constraint on `(instrument_id, granularity, ts)` is the dedup key for
+  repeated capture-job runs against the same still-current candle.
 
 ### Backtesting
 - **backtests** — one row per backtest run: config (JSONB) + summary stats.
@@ -77,9 +86,17 @@ monitoring). Policy, enforced by a worker job (`app/worker/jobs/retention.py`):
    full tick-by-tick history.
 3. A nightly job deletes `market_ticks` rows older than `TICK_RETENTION_DAYS`
    (default 7).
-4. `candles` are never bulk-deleted — 1m candles older than `CANDLE_1M_RETENTION_DAYS`
-   (default 90) are aggregated confirmation-checked against 5m/15m and then pruned;
-   higher timeframes (1h+) are kept indefinitely (low volume, high value for
+4. Only `M1` candles are ever bulk-deleted, once older than
+   `CANDLE_1M_RETENTION_DAYS` (default 90) — a straight age-based delete
+   (`app/worker/jobs/retention.py`), not cross-checked against whether 5m/15m
+   candles exist for the same period first. This doc previously claimed an
+   "aggregated confirmation check" step that doesn't exist in the code;
+   corrected during the production-readiness re-review rather than built,
+   since M1 data is the least valuable for backtesting (higher timeframes are
+   what strategies actually run against) and a confirmation check would add
+   real complexity for low practical benefit at this app's scale — if this
+   matters to you, treat it as a documented extension point, not a promise.
+   Higher timeframes (5m+) are kept indefinitely (low volume, high value for
    backtesting).
 
 ## Indexing notes

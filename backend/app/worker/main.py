@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.core.redis_client import get_redis
 from app.services.market_data import MarketDataService
-from app.worker.jobs import retention, signal_capture, signal_outcome
+from app.worker.jobs import heartbeat, retention, signal_capture, signal_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,7 @@ async def main() -> None:
     # nothing newly eligible.
     scheduler.add_job(signal_capture.run, "interval", minutes=5, id="signal_capture")
     scheduler.add_job(signal_outcome.run, "interval", minutes=20, id="signal_outcome")
+    scheduler.add_job(heartbeat.run, "interval", seconds=30, id="heartbeat")
     scheduler.start()
 
     market_data = MarketDataService(market_data_broker, redis)

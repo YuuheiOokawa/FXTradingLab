@@ -23,7 +23,7 @@ keep it updated as work lands.
 | 7 | Demo broker connectivity | ✅ via `OandaAdapter` against `practice` environment; `GmoCoinAdapter` left as a documented stub (see `06_BROKER_API_DESIGN.md`) |
 | 8 | Risk Engine, Order Orchestrator, Kill Switch | ✅ Implemented |
 | 9 | Production deployment configs | ✅ Dockerfiles, docker-compose, Railway/Vercel config committed; actual cloud deploy not performed from this environment (no cloud credentials available here) — see `12_DEPLOYMENT.md` for the exact steps to deploy |
-| 10 | Live trading | ⚠️ Scaffolded and gated OFF by default (`LIVE_TRADING_ENABLED=false`); `POST /live/orders` route and UI exist but real order submission is intentionally blocked pending the three-condition gate in `10_RISK_MANAGEMENT.md` |
+| 10 | Live trading | ⚠️ Scaffolded and gated OFF by default (`LIVE_TRADING_ENABLED=false`); `POST /live/orders` and `GET /live/status`/`/account`/`/positions` exist and enforce the three-condition gate in `10_RISK_MANAGEMENT.md`. The Settings page shows live gate status and lets the operator toggle the admin gate (behind a re-typed confirmation phrase). **Correction from an earlier version of this row**: it previously claimed a frontend order-submission UI existed too — it doesn't; there is no page that calls `POST /live/orders` or shows the per-order confirmation modal `10_RISK_MANAGEMENT.md` describes. Deliberately not built yet: it's the highest-stakes surface in the app (real money), `GmoCoinAdapter` is still a stub, and building it without a funded account to test against would mean shipping untested real-money-order code — a bigger risk than the gap itself. |
 
 ## Known gaps / next steps (tracked honestly, not hidden)
 

@@ -194,6 +194,13 @@ export interface SystemStatus {
   providers_split: boolean;
   broker_environment: string;
   broker_connected: boolean;
+  database_connected: boolean;
+  redis_connected: boolean;
+  worker_alive: boolean;
+  websocket_client_count: number;
+  signal_engine_ok: boolean;
+  last_price_update: string | null;
+  last_signal_generated: { ts: string; instrument_id: string; score: number } | null;
   kill_switch_active: boolean;
   auto_mode: "manual" | "semi_auto" | "full_auto";
   live_trading_enabled_env: boolean;

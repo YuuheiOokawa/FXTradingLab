@@ -17,6 +17,30 @@ function formatUptime(seconds: number): string {
   return `${m}分`;
 }
 
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return "—";
+  const deltaMs = Date.now() - new Date(iso).getTime();
+  if (deltaMs < 0) return "たった今";
+  const seconds = Math.floor(deltaMs / 1000);
+  if (seconds < 60) return `${seconds}秒前`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}分前`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}時間前`;
+}
+
+function DependencyTile({ label, ok, detail }: { label: string; ok: boolean; detail?: string }) {
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-border bg-card p-3">
+      <div>
+        <div className="text-xs text-muted-foreground">{label}</div>
+        {detail && <div className="mt-0.5 text-xs text-muted-foreground">{detail}</div>}
+      </div>
+      <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${ok ? "bg-buy" : "bg-sell"}`} />
+    </div>
+  );
+}
+
 export function StatusOverview({ status }: { status: SystemStatus }) {
   return (
     <div className="space-y-4">
@@ -35,6 +59,40 @@ export function StatusOverview({ status }: { status: SystemStatus }) {
         <StatTile label="環境" value={status.broker_environment === "live" ? "LIVE" : "Practice"} />
         <StatTile label="動作モード" value={AUTO_MODE_LABEL[status.auto_mode]} />
         <StatTile label="API稼働時間" value={formatUptime(status.api_uptime_seconds)} />
+      </div>
+
+      <div>
+        <div className="mb-2 text-xs font-medium text-muted-foreground">依存コンポーネント</div>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <DependencyTile label="Database" ok={status.database_connected} />
+          <DependencyTile label="Redis" ok={status.redis_connected} />
+          <DependencyTile
+            label="Worker"
+            ok={status.worker_alive}
+            detail={status.worker_alive ? undefined : "30秒ごとのハートビートが途絶えています"}
+          />
+          <DependencyTile label="Market Stream" ok={status.broker_connected} />
+          <DependencyTile label="Signal Engine" ok={status.signal_engine_ok} />
+          <DependencyTile
+            label="WebSocket Clients"
+            ok={true}
+            detail={`接続数: ${status.websocket_client_count}`}
+          />
+          <DependencyTile
+            label="Last Price Update"
+            ok={status.last_price_update != null}
+            detail={formatRelativeTime(status.last_price_update)}
+          />
+          <DependencyTile
+            label="Last Signal Generated"
+            ok={status.last_signal_generated != null}
+            detail={
+              status.last_signal_generated
+                ? `${formatRelativeTime(status.last_signal_generated.ts)} (score ${status.last_signal_generated.score})`
+                : "まだシグナルが記録されていません"
+            }
+          />
+        </div>
       </div>
 
       <div className="rounded-lg border border-border bg-card p-4">

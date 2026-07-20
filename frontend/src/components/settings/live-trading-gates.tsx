@@ -1,12 +1,19 @@
 "use client";
 
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { RiskSettings } from "@/types/api";
+
+// docs/10_RISK_MANAGEMENT.md gate 2: enabling (not disabling) requires
+// re-typing this exact phrase — a deliberate speed bump against a misclick
+// on the button that arms real-money trading.
+const CONFIRMATION_PHRASE = "LIVE取引を有効化する";
 
 interface LiveStatus {
   env_var_enabled: boolean;
@@ -29,6 +36,7 @@ function GateRow({ ok, label, note }: { ok: boolean; label: string; note: string
 
 export function LiveTradingGates({ riskSettings }: { riskSettings: RiskSettings }) {
   const queryClient = useQueryClient();
+  const [confirmationInput, setConfirmationInput] = useState("");
 
   const { data: status, isLoading } = useQuery<LiveStatus>({
     queryKey: ["live-status"],
@@ -41,8 +49,12 @@ export function LiveTradingGates({ riskSettings }: { riskSettings: RiskSettings 
     onSuccess: (data) => {
       queryClient.setQueryData(["risk-settings"], data);
       queryClient.invalidateQueries({ queryKey: ["live-status"] });
+      setConfirmationInput("");
     },
   });
+
+  const isCurrentlyEnabled = riskSettings.live_trading_admin_enabled;
+  const canEnable = confirmationInput === CONFIRMATION_PHRASE;
 
   return (
     <div className="space-y-4">
@@ -82,22 +94,50 @@ export function LiveTradingGates({ riskSettings }: { riskSettings: RiskSettings 
         </span>
       </div>
 
-      <div className="flex items-center justify-between rounded-md border border-border p-3">
-        <div>
-          <div className="text-sm font-medium">管理者設定: live_trading_admin_enabled</div>
-          <div className="text-xs text-muted-foreground">
-            現在: {riskSettings.live_trading_admin_enabled ? "有効" : "無効"}
+      <div className="rounded-md border border-border p-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium">管理者設定: live_trading_admin_enabled</div>
+            <div className="text-xs text-muted-foreground">
+              現在: {isCurrentlyEnabled ? "有効" : "無効"}
+            </div>
           </div>
+          {isCurrentlyEnabled && (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={toggleAdmin.isPending}
+              onClick={() => toggleAdmin.mutate(false)}
+            >
+              無効化する
+            </Button>
+          )}
         </div>
-        <Button
-          type="button"
-          variant={riskSettings.live_trading_admin_enabled ? "destructive" : "outline"}
-          size="sm"
-          disabled={toggleAdmin.isPending}
-          onClick={() => toggleAdmin.mutate(!riskSettings.live_trading_admin_enabled)}
-        >
-          {riskSettings.live_trading_admin_enabled ? "無効化する" : "有効化する"}
-        </Button>
+
+        {!isCurrentlyEnabled && (
+          <div className="mt-3 space-y-2 border-t border-border pt-3">
+            <p className="text-xs text-muted-foreground">
+              有効化するには、下の欄に「<span className="font-mono text-foreground">{CONFIRMATION_PHRASE}</span>
+              」と正確に入力してください。誤操作でLIVE取引が有効化されることを防ぐための確認です。
+            </p>
+            <Input
+              value={confirmationInput}
+              onChange={(e) => setConfirmationInput(e.target.value)}
+              placeholder={CONFIRMATION_PHRASE}
+              className="font-mono"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!canEnable || toggleAdmin.isPending}
+              onClick={() => toggleAdmin.mutate(true)}
+            >
+              有効化する
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -8,6 +8,7 @@ import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.core.redis_client import get_redis
+from app.ws import registry
 from app.ws.auth import check_ws_auth
 
 router = APIRouter()
@@ -21,6 +22,7 @@ async def ws_system(websocket: WebSocket) -> None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     await websocket.accept()
+    registry.increment()
     redis = get_redis()
     pubsub = redis.pubsub()
     await pubsub.subscribe(SYSTEM_CHANNEL)
@@ -34,3 +36,4 @@ async def ws_system(websocket: WebSocket) -> None:
         pass
     finally:
         await pubsub.close()
+        registry.decrement()
