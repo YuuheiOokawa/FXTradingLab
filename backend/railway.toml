@@ -1,0 +1,24 @@
+# Railway deploy config for the API service (docs/12_DEPLOYMENT.md).
+#
+# This repo's backend runs as TWO Railway services from the same Dockerfile:
+#   1. "api"    — this file's default: `CMD` from the Dockerfile (uvicorn).
+#   2. "worker" — create a second Railway service pointing at the same repo with
+#      Root Directory = backend, then override its Start Command in the Railway
+#      dashboard to `python -m app.worker.main`. Railway doesn't support defining
+#      two differently-started services from one railway.toml, so the worker's
+#      start command override is a one-time manual dashboard step.
+#
+# Both services need the same environment variables (DATABASE_URL, REDIS_URL,
+# BROKER_*, LIVE_TRADING_ENABLED=false, etc — see ../.env.example) plus Railway's
+# reference variables for the attached Postgres/Redis plugins.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

@@ -1,0 +1,301 @@
+"""Order Orchestrator — the only code allowed to call `BrokerAdapter.create_order`
+or `close_position` (docs/10_RISK_MANAGEMENT.md). Every entry unconditionally goes
+through `RiskEngine.validate()` first; nothing here may skip that call.
+
+Paper trading never touches `BrokerAdapter.create_order` at all — it uses the
+broker only for price *reads*, and simulates the fill/position book itself, so a
+paper order can never, even by a future bug, become a real broker order.
+"""
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.brokers.base import BrokerAdapter
+from app.brokers.errors import BrokerConnectionError
+from app.brokers.schemas import OrderRequest
+from app.core.config import Settings, get_settings
+from app.db.models.journal import SystemEvent, TradeJournal
+from app.db.models.market import Instrument
+from app.db.models.trading import LiveOrder, LivePosition, PaperAccount, PaperOrder, PaperPosition
+from app.services.repo import get_instrument_by_symbol, get_or_create_paper_account, get_or_create_risk_settings
+from app.services.risk_engine import RiskContext, RiskEngine, RiskRejected
+
+_engine = RiskEngine()
+
+
+class LiveTradingDisabled(Exception):
+    def __init__(self, missing_gates: list[str]) -> None:
+        super().__init__(f"LIVE trading disabled: missing gates {missing_gates}")
+        self.missing_gates = missing_gates
+
+
+def pip_size_for(symbol: str) -> float:
+    return 0.01 if symbol.endswith("JPY") else 0.0001
+
+
+async def _consecutive_losses(session: AsyncSession, source: str) -> int:
+    result = await session.execute(
+        select(TradeJournal.pnl)
+        .where(TradeJournal.source == source)
+        .order_by(TradeJournal.closed_at.desc())
+        .limit(50)
+    )
+    count = 0
+    for (pnl,) in result.all():
+        if pnl < 0:
+            count += 1
+        else:
+            break
+    return count
+
+
+async def _today_realized_pnl(session: AsyncSession, source: str) -> float:
+    today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    result = await session.execute(
+        select(TradeJournal.pnl).where(TradeJournal.source == source, TradeJournal.closed_at >= today_start)
+    )
+    return sum(pnl for (pnl,) in result.all())
+
+
+async def _log_event(session: AsyncSession, category: str, severity: str, message: str, context: dict | None = None) -> None:
+    session.add(SystemEvent(ts=datetime.now(UTC), category=category, severity=severity, message=message, context=context or {}))
+
+
+async def _notify(session: AsyncSession, kind: str, title: str, body: str) -> None:
+    from app.services.notifications.channel import notify
+
+    await notify(session, kind, title, body)
+
+
+@dataclass
+class OrderOutcome:
+    approved: bool
+    order: PaperOrder | LiveOrder | None = None
+    position: PaperPosition | LivePosition | None = None
+    rejection_code: str | None = None
+    rejection_message: str | None = None
+
+
+class OrderOrchestrator:
+    def __init__(self, broker: BrokerAdapter, settings: Settings | None = None) -> None:
+        self._broker = broker
+        self._settings = settings or get_settings()
+
+    # ------------------------------------------------------------------ paper --
+
+    async def submit_paper_order(self, session: AsyncSession, order: OrderRequest) -> OrderOutcome:
+        existing = await session.execute(
+            select(PaperOrder).where(PaperOrder.idempotency_key == order.idempotency_key)
+        )
+        dup = existing.scalar_one_or_none()
+        if dup is not None:
+            # Idempotent replay: return the original result without re-running risk
+            # checks or creating a second position (docs/10_RISK_MANAGEMENT.md).
+            if dup.status == "rejected":
+                raise RiskRejected(dup.reject_reason or "REJECTED", dup.reject_reason or "rejected")
+            position_result = await session.execute(
+                select(PaperPosition).where(PaperPosition.opening_idempotency_key == dup.idempotency_key)
+            )
+            return OrderOutcome(approved=True, order=dup, position=position_result.scalars().first())
+
+        risk_settings = await get_or_create_risk_settings(session)
+        account = await get_or_create_paper_account(session)
+        instrument = await get_instrument_by_symbol(session, order.instrument)
+        if instrument is None:
+            raise ValueError(f"unknown instrument {order.instrument}")
+
+        pip = pip_size_for(order.instrument)
+        try:
+            quote = await self._broker.get_current_price(order.instrument)
+            broker_connected = True
+            spread_pips = quote.spread / pip
+            fill_price = quote.ask if order.direction == "BUY" else quote.bid
+        except BrokerConnectionError:
+            broker_connected = False
+            spread_pips = 0.0
+            fill_price = 0.0
+
+        open_positions_result = await session.execute(
+            select(PaperPosition).where(PaperPosition.account_id == account.id, PaperPosition.status == "open")
+        )
+        open_positions = open_positions_result.scalars().all()
+        same_symbol_count = sum(1 for p in open_positions if p.instrument_id == instrument.id)
+
+        risk_amount = abs(fill_price - order.stop_loss) * order.size if order.stop_loss is not None else 0.0
+        today_pnl = await _today_realized_pnl(session, "paper")
+        equity = account.balance
+        daily_loss_pct = max(0.0, -today_pnl) / equity * 100 if equity > 0 else 0.0
+        drawdown_pct = max(0.0, (account.high_water_mark - equity) / account.high_water_mark * 100) if account.high_water_mark > 0 else 0.0
+        consecutive = await _consecutive_losses(session, "paper")
+
+        ctx = RiskContext(
+            kill_switch_active=risk_settings.kill_switch_active,
+            broker_connected=broker_connected,
+            price_stale=not broker_connected,
+            current_spread_pips=spread_pips,
+            max_spread_pips=risk_settings.max_spread_pips_default,
+            equity=equity,
+            risk_amount=risk_amount,
+            max_risk_per_trade_pct=risk_settings.max_risk_per_trade_pct,
+            daily_loss_pct=daily_loss_pct,
+            max_daily_loss_pct=risk_settings.max_daily_loss_pct,
+            current_drawdown_pct=drawdown_pct,
+            max_drawdown_pct=risk_settings.max_drawdown_pct,
+            open_position_count=len(open_positions),
+            max_concurrent_positions=risk_settings.max_concurrent_positions,
+            same_symbol_open_count=same_symbol_count,
+            max_same_symbol_positions=risk_settings.max_same_symbol_positions,
+            consecutive_losses=consecutive,
+            consecutive_loss_stop_count=risk_settings.consecutive_loss_stop_count,
+            is_duplicate_idempotency_key=False,  # handled by the early-return above
+        )
+        result = _engine.validate(ctx)
+
+        if not result.approved:
+            rejected_row = PaperOrder(
+                account_id=account.id,
+                instrument_id=instrument.id,
+                direction=order.direction,
+                size=order.size,
+                stop_loss=order.stop_loss,
+                take_profit=order.take_profit,
+                status="rejected",
+                reject_reason=result.code,
+                idempotency_key=order.idempotency_key,
+                created_at=datetime.now(UTC),
+            )
+            session.add(rejected_row)
+            await _log_event(session, "risk", "warning", f"paper order rejected: {result.code}", {"message": result.message})
+            await _notify(session, "risk_reject", "注文が拒否されました", result.message or "")
+            await session.commit()
+            raise RiskRejected(result.code or "REJECTED", result.message or "rejected")
+
+        filled_order = PaperOrder(
+            account_id=account.id,
+            instrument_id=instrument.id,
+            direction=order.direction,
+            size=order.size,
+            stop_loss=order.stop_loss,
+            take_profit=order.take_profit,
+            status="filled",
+            idempotency_key=order.idempotency_key,
+            created_at=datetime.now(UTC),
+        )
+        position = PaperPosition(
+            account_id=account.id,
+            instrument_id=instrument.id,
+            direction=order.direction,
+            size=order.size,
+            entry_price=fill_price,
+            stop_loss=order.stop_loss,
+            take_profit=order.take_profit,
+            opened_at=datetime.now(UTC),
+            status="open",
+            opening_idempotency_key=order.idempotency_key,
+        )
+        session.add_all([filled_order, position])
+        await _log_event(session, "order", "info", f"paper order filled: {order.instrument} {order.direction}")
+        await session.commit()
+        return OrderOutcome(approved=True, order=filled_order, position=position)
+
+    async def close_paper_position(self, session: AsyncSession, position_id: uuid.UUID) -> PaperPosition:
+        position = await session.get(PaperPosition, position_id)
+        if position is None or position.status != "open":
+            raise ValueError("position not open")
+        instrument_row = await session.get(Instrument, position.instrument_id)
+        quote = await self._broker.get_current_price(instrument_row.symbol)
+        price = quote.bid if position.direction == "BUY" else quote.ask
+        pnl = (price - position.entry_price) if position.direction == "BUY" else (position.entry_price - price)
+        pnl *= position.size
+
+        account = await session.get(PaperAccount, position.account_id)
+        account.balance += pnl
+        account.high_water_mark = max(account.high_water_mark, account.balance)
+
+        position.status = "closed"
+        position.closed_at = datetime.now(UTC)
+        position.close_price = price
+        position.realized_pnl = pnl
+
+        session.add(
+            TradeJournal(
+                source="paper",
+                source_ref_id=position.id,
+                pair=instrument_row.symbol,
+                direction=position.direction,
+                entry_time=position.opened_at,
+                entry_price=position.entry_price,
+                exit_time=position.closed_at,
+                exit_price=price,
+                size=position.size,
+                stop_loss=position.stop_loss,
+                take_profit=position.take_profit,
+                pnl=pnl,
+                reason="manual close",
+                closed_at=position.closed_at,
+            )
+        )
+        await _log_event(session, "order", "info", f"paper position closed: {instrument_row.symbol} pnl={pnl:.2f}")
+        await session.commit()
+        return position
+
+    # ------------------------------------------------------------------- live --
+
+    def check_live_gates(self, risk_settings_admin_enabled: bool, confirm_live: bool) -> list[str]:
+        """Returns the list of unmet gates (empty = all satisfied). Three
+        independent conditions, all required (docs/10_RISK_MANAGEMENT.md)."""
+        missing = []
+        if not self._settings.live_trading_enabled:
+            missing.append("LIVE_TRADING_ENABLED env var is false")
+        if not risk_settings_admin_enabled:
+            missing.append("admin setting live_trading_admin_enabled is false")
+        if not confirm_live:
+            missing.append("per-request confirm_live was not set")
+        return missing
+
+    async def submit_live_order(self, session: AsyncSession, order: OrderRequest, confirm_live: bool) -> OrderOutcome:
+        risk_settings = await get_or_create_risk_settings(session)
+        missing_gates = self.check_live_gates(risk_settings.live_trading_admin_enabled, confirm_live)
+        if missing_gates:
+            raise LiveTradingDisabled(missing_gates)
+
+        # Real implementation would mirror submit_paper_order's RiskContext assembly
+        # using broker.get_account()/get_positions() instead of the paper tables,
+        # then call self._broker.create_order(order) only after RiskEngine approval.
+        # Left minimal here: this path cannot be exercised without a real funded
+        # broker account, which this build environment does not have (see
+        # docs/14_IMPLEMENTATION_PLAN.md "Known gaps").
+        raise LiveTradingDisabled(["LIVE order execution requires a configured, funded broker account"])
+
+    # ------------------------------------------------------------------ kill --
+
+    async def activate_kill_switch(self, session: AsyncSession, flatten_positions: bool) -> dict:
+        risk_settings = await get_or_create_risk_settings(session)
+        risk_settings.kill_switch_active = True
+        await session.commit()
+        await _log_event(session, "kill_switch", "warning", "Kill switch activated", {"flatten_positions": flatten_positions})
+        await _notify(session, "kill_switch", "Kill Switchが作動しました", "新規注文と自動売買を停止しました。")
+
+        flattened: list[str] = []
+        if flatten_positions:
+            open_positions = await session.execute(select(PaperPosition).where(PaperPosition.status == "open"))
+            for position in open_positions.scalars().all():
+                try:
+                    await self.close_paper_position(session, position.id)
+                    flattened.append(str(position.id))
+                except Exception as exc:  # noqa: BLE001 - best-effort flatten, continue with remaining positions
+                    await _log_event(session, "kill_switch", "error", f"failed to flatten position {position.id}: {exc}")
+        await session.commit()
+        return {"kill_switch_active": True, "flattened_positions": flattened}
+
+    async def deactivate_kill_switch(self, session: AsyncSession) -> dict:
+        risk_settings = await get_or_create_risk_settings(session)
+        risk_settings.kill_switch_active = False
+        await session.commit()
+        await _log_event(session, "kill_switch", "info", "Kill switch deactivated")
+        return {"kill_switch_active": False}

@@ -1,0 +1,47 @@
+# --- Python / backend ---
+backend/__pycache__/
+**/__pycache__/
+*.py[cod]
+backend/.venv/
+backend/venv/
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/htmlcov/
+backend/.coverage
+*.egg-info/
+
+# --- Node / frontend ---
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/coverage/
+frontend/next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# --- Docker ---
+*.pid
+
+# --- DB / data ---
+*.sqlite3
+pgdata/
+redisdata/
+
+# --- Logs ---
+*.log
+logs/

@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.deps import get_broker, get_db
+from app.brokers.base import BrokerAdapter
+from app.brokers.schemas import Granularity
+from app.core.config import get_settings
+from app.db.models.market import Candle as CandleModel
+from app.db.models.market import Instrument
+from app.services.market_data import DEFAULT_INSTRUMENT_META, ensure_instruments
+
+router = APIRouter(prefix="/instruments", tags=["market"])
+
+
+class InstrumentOut(BaseModel):
+    symbol: str
+    display_name: str
+    pip_size: float
+    price_precision: int
+    is_watched: bool
+
+    class Config:
+        from_attributes = True
+
+
+class AddInstrumentIn(BaseModel):
+    symbol: str
+
+
+@router.get("", response_model=list[InstrumentOut])
+async def list_instruments(session: AsyncSession = Depends(get_db)) -> list[Instrument]:
+    result = await session.execute(select(Instrument).where(Instrument.is_watched == True))  # noqa: E712
+    rows = list(result.scalars().all())
+    if not rows:
+        settings = get_settings()
+        await ensure_instruments(settings.watchlist)
+        result = await session.execute(select(Instrument).where(Instrument.is_watched == True))  # noqa: E712
+        rows = list(result.scalars().all())
+    return rows
+
+
+@router.post("", response_model=InstrumentOut)
+async def add_instrument(body: AddInstrumentIn, session: AsyncSession = Depends(get_db)) -> Instrument:
+    result = await session.execute(select(Instrument).where(Instrument.symbol == body.symbol))
+    existing = result.scalar_one_or_none()
+    if existing:
+        existing.is_watched = True
+        await session.commit()
+        await session.refresh(existing)
+        return existing
+    meta = DEFAULT_INSTRUMENT_META.get(body.symbol, {"display_name": body.symbol, "pip_size": 0.01, "price_precision": 3})
+    instrument = Instrument(symbol=body.symbol, is_watched=True, **meta)
+    session.add(instrument)
+    await session.commit()
+    await session.refresh(instrument)
+    return instrument
+
+
+@router.delete("/{symbol}")
+async def remove_instrument(symbol: str, session: AsyncSession = Depends(get_db)) -> dict:
+    result = await session.execute(select(Instrument).where(Instrument.symbol == symbol))
+    instrument = result.scalar_one_or_none()
+    if instrument is None:
+        raise HTTPException(404, "instrument not found")
+    instrument.is_watched = False
+    await session.commit()
+    return {"symbol": symbol, "is_watched": False}
+
+
+@router.get("/{symbol}/price")
+async def get_price(symbol: str, broker: BrokerAdapter = Depends(get_broker)) -> dict:
+    quote = await broker.get_current_price(symbol)
+    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_candles = await broker.get_candles(symbol, Granularity.M15, 100)
+    todays = [c for c in day_candles if c.open_time >= day_start] or day_candles[-1:]
+    day_high = max(c.high for c in todays)
+    day_low = min(c.low for c in todays)
+    prev_close = day_candles[0].open if day_candles else quote.mid
+    change = quote.mid - prev_close
+    change_pct = (change / prev_close * 100) if prev_close else 0.0
+    return {
+        "instrument": symbol,
+        "bid": quote.bid,
+        "ask": quote.ask,
+        "mid": quote.mid,
+        "spread": quote.spread,
+        "day_high": day_high,
+        "day_low": day_low,
+        "change": round(change, 6),
+        "change_pct": round(change_pct, 4),
+        "ts": quote.ts.isoformat(),
+    }
+
+
+@router.get("/{symbol}/candles")
+async def get_candles(
+    symbol: str,
+    granularity: Granularity = Granularity.M15,
+    count: int = 300,
+    broker: BrokerAdapter = Depends(get_broker),
+) -> list[dict]:
+    count = max(1, min(count, 5000))
+    candles = await broker.get_candles(symbol, granularity, count)
+    return [c.model_dump(mode="json") for c in candles]
