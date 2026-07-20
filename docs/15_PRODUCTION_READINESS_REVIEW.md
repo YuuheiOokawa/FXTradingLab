@@ -71,13 +71,13 @@ gaps that only surfaced from actually running things.
 | Broker Integration | B | OANDA adapter is type-safe end-to-end (no raw JSON leaks past `app/brokers/oanda.py`), now retries transient GET failures with backoff, never auto-retries order submission (by design — see docs/16). GMO Coin remains a documented stub pending a funded account + a direct read of its live docs (automated fetches hit anti-bot protection during this review, see docs/16). |
 | Signal Engine | A | Audited specifically for look-ahead bias; found and fixed a real one (see above). Entry-timeframe evaluation only ever sees bars up to and including "now" by construction of the bar loop. |
 | Backtest | A | Conservative same-bar SL/TP handling (SL assumed first) was already correct and tested; the MTF look-ahead fix closes the one real gap found. |
-| Replay | C | Functionally correct (candles are revealed one at a time, no future data reaches the frontend) but state is in-process/in-memory only, not persisted — a server restart loses an in-progress session. `ReplaySession`/`ReplayTrade` DB persistence and the requested 3-tier qualitative judgment scoring (良い判断/普通/危険な判断, vs. raw P&L) are designed but not implemented this pass — see `14_IMPLEMENTATION_PLAN.md`. |
-| Paper Trading | B | Already fills at bid/ask (not mid) with the current live quote, already goes through the same Risk Engine as everything else, already rejects with a clear typed error. Gap: no explicit slippage model (backtest has one, paper trading doesn't) and only market orders are modeled (no limit/stop pending-order book) — both documented as extension points, not implemented this pass. |
+| Replay | A *(see "a third pass" update below — raised from C)* | Candles are revealed one at a time with no future data reaching the frontend, now backed by persisted `ReplaySession`/`ReplayTrade` (survives a server restart, verified) with 3-tier qualitative judgment scoring (良い判断/普通/危険な判断) that structurally cannot see the outcome it's grading. |
+| Paper Trading | A *(see "a third pass" update below — raised from B)* | Fills at bid/ask with the current live quote through the same Risk Engine as everything else; now models adverse slippage on market fills and supports limit/stop pending orders with kill-switch re-checked at fill time, not just at placement. |
 | Risk Engine | A | 10 checks, now with stress tests beyond the original per-rule unit tests: broker disconnect at entry and at close, daily-loss-limit and consecutive-loss-stop computed from real journal rows, max-concurrent-positions across distinct instruments — all exercised through the real submit/close flow against the real test database. |
 | Security | B | Bearer-token REST+WS auth, CORS allowlist, secret redaction in logs, and a single-shared-secret frontend login gate are all real and tested. This is intentionally a single-operator model, not multi-user auth (out of scope per `01_REQUIREMENTS.md`) — appropriate for who this app is built for, but worth being explicit that it is not a general-purpose multi-tenant auth system. No rate limiting on the REST API (a determined actor with the token could hammer it) — acceptable for a single-operator personal deployment, would need addressing before wider exposure. |
-| Observability | B | Structured logging with request-id correlation, `/health`, `/ready` (real DB+Redis checks), `/metrics`, and a System page showing uptime/last-error, all added and tested this pass. No log shipping/alerting configured (expected — that's a deployment-time operator choice, not something to bake into the app). |
+| Observability | A *(see "a third pass" update below — raised from B)* | Structured logging with request-id **and now actually-populated order-id** correlation, `/health`, `/ready` (real DB+Redis checks), `/metrics`, and a System page showing every dependency (DB/Redis/Worker-heartbeat/WS-client-count/last-price/last-signal/uptime/last-error). No log shipping/alerting configured (expected — that's a deployment-time operator choice, not something to bake into the app). |
 | Deployment | B | Docker Compose validated end-to-end locally (all 5 services). Dockerfiles, Railway/Vercel config present. No actual cloud deploy was performed from this sandbox (no cloud credentials available) — see `docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md` for the exact operator steps. |
-| Testing | A | 89 backend tests (pytest, real Postgres) + 7 frontend unit tests, all passing; full-stack browser verification performed repeatedly throughout this review, not just once at the end. |
+| Testing | A | 149 backend tests (pytest, real Postgres) + 7 frontend unit tests, all passing, plus a committed/CI-wired Playwright end-to-end suite covering the full user journey — see "a third pass" update below. |
 
 ## Update — later in this same review pass
 
@@ -137,6 +137,96 @@ in `tests/test_order_orchestrator.py` (a 5-way concurrent-race test) failed
 once and passed on three immediate retries — not a regression from this
 review, but worth knowing about if it's ever seen failing in CI.
 
+## Update — a third pass, closing the two long-standing "not implemented" gaps
+
+This pass re-verified the current branch state against the actual code (not
+the claims in this file) before doing anything else, then worked through the
+two items this doc had honestly listed as open since the first pass: Replay
+persistence/judgment scoring, and Paper Trading slippage/order types. Also
+closed several smaller gaps found the same way as before — by exercising the
+running app, not by reading docs.
+
+15. **`docs/09_BACKTEST_DESIGN.md`'s `run_range()` claim (see #9 above) was
+    still accurate as corrected** — re-checked, no regression.
+16. **System page was missing several of the observability fields
+    `docs/02_SYSTEM_ARCHITECTURE.md` describes**: Database/Redis connectivity
+    were implied by every request succeeding but never surfaced explicitly,
+    Worker liveness had no signal independent of tick traffic (so "worker
+    crashed" and "market quiet" looked identical), WebSocket client count and
+    last-signal-generated timestamp weren't exposed at all. Fixed: a 30s
+    worker heartbeat key (90s TTL) distinct from tick flow, an in-process WS
+    client counter, explicit `SELECT 1`/`PING` checks, and a
+    most-recent-`Signal`-row query — all added to `GET /system/status` and
+    the System page's dependency tile grid.
+17. **`order_id` was declared as a structured-log field
+    (`app/core/logging.py`) but was never actually populated** — every order
+    log line had `order_id: null`, making "grep this order's full lifecycle"
+    impossible in practice despite the log schema claiming to support it.
+    Fixed with a proper `contextvars`-based `order_context()` scope wrapping
+    paper/live order submission and close paths; verified with a test that
+    spies on the context value during a real `POST /paper/orders` call
+    through the ASGI transport (not just a unit test of the context manager
+    in isolation).
+18. **No mobile navigation at all** — the sidebar was `hidden` below the `md`
+    breakpoint with no replacement, so the app was unusable on a phone/tablet
+    despite `docs/01_REQUIREMENTS.md` listing mobile access as in scope.
+    Fixed with a hamburger + slide-in drawer.
+19. **Dashboard had no loading or error state** — on a cold load (or a
+    backend hiccup) it silently rendered with `undefined` data feeding
+    every child component instead of showing anything explicit. Fixed.
+20. **Replay had no persistence** (the #1 remaining item from the first
+    pass): an in-progress session lived only in a process-local dict, so an
+    API restart silently lost it — verified by actually killing and
+    restarting the backend mid-session in a browser test and confirming the
+    session survived. Fixed with `ReplaySession`/`ReplayTrade` tables
+    (migration `0af22da3af76`).
+21. **Replay scoring was profit/loss only** (the other half of the #1 item):
+    grading a decision by whether it happened to be followed by a favorable
+    move rewards outcome, not process, which is explicitly the wrong thing
+    to train on (a good decision can still lose; a bad one can still win).
+    Fixed with `judge_decision()` — a pure function that only ever looks at
+    information available *at decision time* (direction/score alignment,
+    risk-reward, a decided SKIP's rationale) and never takes a P&L or
+    outcome argument at all, structurally guaranteeing it can't leak
+    hindsight into the verdict. Produces a 3-tier 良い判断/普通/危険な判断
+    verdict with a per-criterion breakdown shown in the UI.
+22. **Paper Trading filled every order instantly at the exact current
+    price with no slippage and no order types** (the #2 remaining item):
+    unrealistic versus a real broker, and blocked ever testing a limit/stop
+    strategy in Paper mode. Fixed: market orders now fill with
+    `PAPER_SLIPPAGE_PIPS` adverse slippage (ask+slip for BUY, bid-slip for
+    SELL); limit/stop orders create a pending order with no position until a
+    10s worker poll sees the trigger price crossed, re-checking the kill
+    switch at fill time (not just at placement time, which would otherwise
+    let a kill-switch activation after placement still fill later).
+23. **No automated end-to-end coverage of the actual user journey** — every
+    verification in this review (and the prior one) was an ad hoc Playwright
+    script that ran once and left no trace. Fixed:
+    `frontend/e2e/full-flow.spec.ts`, a committed Playwright suite that
+    drives a real browser through Dashboard → Markets → Chart → Signals →
+    Replay (decide + judgment) → Simulation → Backtest → Paper order (fill +
+    close) → Trade journal → Analytics → Kill Switch (armed then disarmed).
+    Wired into CI as an advisory (non-blocking) job — see
+    `docs/18_E2E_TESTING.md` for why it isn't a required gate.
+
+Grade updates from this pass:
+
+| Area | Grade | Why |
+|---|---|---|
+| Replay | **A (up from C)** | Both reasons it was held at C are now closed: DB-backed persistence (verified by an actual process-restart test, not just a claim) and non-outcome-based 3-tier judgment scoring. |
+| Paper Trading | **A (up from B)** | Slippage modeling and limit/stop pending orders (with kill-switch re-check at fill time) close the gap noted in the first pass. Partial fills remain out of scope, same as real small-account retail execution. |
+| Observability | **A (up from B)** | The System page now surfaces every dependency `02_SYSTEM_ARCHITECTURE.md` describes (DB/Redis/Worker/WS-clients/last-price/last-signal), and the `order_id` structured-log field is now actually populated instead of silently always null. |
+| Testing | **A (unchanged, but substantively broader)** | 149 backend tests (up from 112), 7 frontend unit tests, plus a committed and CI-wired end-to-end suite covering the full user journey in one real-browser run — not just ad hoc verification during development. |
+
+One thing worth recording precisely because it wasted time during this
+pass: running `npm run build` (production build) while a `next dev` server
+for the same project is still running corrupts the dev server's `.next/`
+output and makes it serve broken pages until restarted — not a bug in this
+app, a general Next.js gotcha, but it produced a confusing false "Broker
+disconnected" reading on the Dashboard mid-review that had nothing to do
+with the broker. Restarting the dev server resolved it immediately; noted
+here so it isn't mistaken for a real regression if seen again.
+
 ## What "A" does and doesn't mean here
 
 An **A** means: the code does what it claims, is covered by a test that would
@@ -152,12 +242,28 @@ behavior once a live broker account is eventually connected.
 See `docs/14_IMPLEMENTATION_PLAN.md` for the full running list; the delta
 this pass didn't close:
 
-- `GmoCoinAdapter` still a stub (needs a funded account).
-- Replay session/trade persistence + qualitative judgment scoring.
+- `GmoCoinAdapter` still a stub (needs a funded account) — re-confirmed this
+  pass that GMO Coin's FX API is real and distinct from its crypto API (see
+  `docs/16_BROKER_SELECTION_REVIEW.md`), so the stub is a "needs an account
+  to finish, not a wrong-API mistake" gap, not a design problem.
+- Paper Trading partial fills — a limit/stop order fills entirely-or-not at
+  the current poll tick; no partial-fill simulation. Documented as an
+  extension point in `order_orchestrator.py`, not built.
+- A materially stronger security boundary (routing all API/WS traffic
+  through a backend-for-frontend so the browser never holds the real bearer
+  token) remains unbuilt — see `docs/11_SECURITY.md`.
+- Realtime heartbeat frame independent of tick traffic — noted in the first
+  pass, still not built (low practical risk for FX, see the Realtime row
+  above).
+- No actual cloud deployment executed from this environment (no cloud
+  credentials available in this sandbox) — `docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md`
+  has the exact steps for the operator to run themselves.
 - ~~Signal outcome history tracking (did a BUY 80+ signal actually work out?)
   and the corresponding Analytics score-bucket accuracy view~~ — implemented
   in a later pass; see `docs/08_SIGNAL_ENGINE.md` "Signal outcome history".
 - ~~Walk-Forward Analysis (designed, not implemented)~~ — implemented in a
   later pass; see `docs/09_BACKTEST_DESIGN.md` "Walk-Forward Analysis".
-- Paper trading slippage model and limit/stop order types.
-- No actual cloud deployment executed from this environment.
+- ~~Replay session/trade persistence + qualitative judgment scoring~~ —
+  implemented this pass; see "a third pass" update above.
+- ~~Paper trading slippage model and limit/stop order types~~ — implemented
+  this pass; see "a third pass" update above.
