@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.core.redis_client import get_redis
 from app.services.market_data import MarketDataService
-from app.worker.jobs import retention
+from app.worker.jobs import retention, signal_capture, signal_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,12 @@ async def main() -> None:
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(retention.run, "cron", hour=3, minute=0, id="retention")
+    # Signal outcome history (docs/08_SIGNAL_ENGINE.md): capture runs often
+    # enough to catch each new M15 candle close; outcome computation runs
+    # less often since OUTCOME_HORIZON_MINUTES (4h) means most runs find
+    # nothing newly eligible.
+    scheduler.add_job(signal_capture.run, "interval", minutes=5, id="signal_capture")
+    scheduler.add_job(signal_outcome.run, "interval", minutes=20, id="signal_outcome")
     scheduler.start()
 
     market_data = MarketDataService(market_data_broker, redis)

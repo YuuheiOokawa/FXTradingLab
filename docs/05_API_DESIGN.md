@@ -55,6 +55,12 @@ disabled in local dev for convenience.
 ### Journal & analytics
 - `GET /journal/trades?source=paper&pair=USD_JPY`
 - `GET /analytics/win-rate?dimension=hour|weekday|pair|direction|regime|score_bucket`
+- `GET /analytics/signal-outcomes?pair=USD_JPY` — score-bucket (80+/70-79/60-69/<60)
+  signal outcome accuracy, populated by the worker's `signal_capture`/`signal_outcome`
+  jobs, not computed on request (docs/08_SIGNAL_ENGINE.md "Signal outcome history").
+  Distinct from the win-rate endpoint above: that one is about actual journaled
+  trades; this one is about what happened after a signal fired, whether or not
+  anyone traded it.
 
 ### System
 - `GET /system/status` (under `/api/v1`, bearer-token protected) — broker

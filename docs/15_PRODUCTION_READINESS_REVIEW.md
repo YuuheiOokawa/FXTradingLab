@@ -96,8 +96,9 @@ this pass didn't close:
 
 - `GmoCoinAdapter` still a stub (needs a funded account).
 - Replay session/trade persistence + qualitative judgment scoring.
-- Signal outcome history tracking (did a BUY 80+ signal actually work out?)
-  and the corresponding Analytics score-bucket accuracy view.
+- ~~Signal outcome history tracking (did a BUY 80+ signal actually work out?)
+  and the corresponding Analytics score-bucket accuracy view~~ — implemented
+  in a later pass; see `docs/08_SIGNAL_ENGINE.md` "Signal outcome history".
 - ~~Walk-Forward Analysis (designed, not implemented)~~ — implemented in a
   later pass; see `docs/09_BACKTEST_DESIGN.md` "Walk-Forward Analysis".
 - Paper trading slippage model and limit/stop order types.

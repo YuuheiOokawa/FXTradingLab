@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { SignalOutcomeTable } from "@/components/analytics/signal-outcome-table";
 import { WinRateChart } from "@/components/analytics/win-rate-chart";
 import { WinRateTable } from "@/components/analytics/win-rate-table";
 import type { WinRateBreakdown } from "@/types/api";
@@ -103,6 +104,8 @@ export default function AnalyticsPage() {
           <WinRateTable breakdown={data.breakdown} />
         </>
       )}
+
+      <SignalOutcomeTable />
     </div>
   );
 }

@@ -166,6 +166,23 @@ export interface TradeJournalEntry {
   closed_at: string;
 }
 
+export interface SignalOutcomeBucket {
+  score_bucket: string;
+  signal_count: number;
+  pending_outcome_count: number;
+  outcome_count: number;
+  favorable_move_win_rate_pct: number | null;
+  avg_max_favorable_pips: number | null;
+  avg_max_adverse_pips: number | null;
+  avg_price_after_horizon_pips: number | null;
+  tp_reached_rate_pct: number | null;
+  sl_reached_rate_pct: number | null;
+}
+
+export interface SignalOutcomeResponse {
+  breakdown: SignalOutcomeBucket[];
+}
+
 export interface WinRateBreakdown {
   dimension: string;
   breakdown: { key: string; trades: number; win_rate_pct: number; total_pnl: number }[];

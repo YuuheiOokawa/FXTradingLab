@@ -89,6 +89,47 @@ Label thresholds: ≥75 強い{buy/sell}, ≥55 {buy/sell}, else 様子見 (for 
 side), symmetric for SELL. Score is computed independently for BUY and SELL bias;
 whichever is higher (and above the 様子見 floor) is reported, otherwise 様子見.
 
+## Signal outcome history
+
+`GET /signals/{symbol}` and the FULL_AUTO evaluation loop
+(`app/services/auto_trader.py`) both compute signals on demand — neither
+persists them. Two independent worker jobs build a historical record purely
+for analytics, unrelated to whether anyone actually traded a given signal:
+
+- `app/worker/jobs/signal_capture.py` (every 5 min): evaluates the
+  entry-timeframe (M15) signal for every watched instrument and persists a
+  `Signal` row (`app/db/models/strategy.py`) whenever the score crosses
+  `MIN_SCORE_THRESHOLD` (55, same floor `BacktestConfig` uses). Deduplicated
+  by `(instrument, granularity, candle open_time)` — a real DB unique
+  constraint, not just an application-level check — so repeated runs against
+  the same still-current candle are a no-op.
+- `app/worker/jobs/signal_outcome.py` (every 20 min): for each captured
+  signal whose `OUTCOME_HORIZON_MINUTES` (4h) has actually elapsed *and*
+  enough subsequent candle history exists in the DB to cover the full
+  window, computes from the DB's own candle history (never re-fetched from
+  the broker — purely retrospective): `max_favorable_pips` /
+  `max_adverse_pips` (the best and worst the price moved in the horizon,
+  relative to the signal's direction), `price_after_horizon_pips` (net move
+  in the signal's favor by the end of the window), and `tp_reached` /
+  `sl_reached` against an assumed 30/60-pip SL/TP distance (same defaults
+  `BacktestConfig` uses) — **deliberately not a trade simulation**: unlike
+  Backtest/Paper Trading, `tp_reached` and `sl_reached` are each independently
+  "did price touch this level at any point in the window", with no
+  same-bar-conflict ordering applied, so both can be `true` for the same
+  signal. This is intentionally a looser statistic — "does a high-score
+  signal usually move favorably afterward" — not a claim about what a real
+  trade following that signal would have made.
+
+`GET /analytics/signal-outcomes?pair=USD_JPY` (docs/05_API_DESIGN.md)
+aggregates completed outcomes into the score bands 80+/70-79/60-69/<60,
+reporting each bucket's outcome count, a "favorable move win rate" (the
+share of signals where `max_favorable_pips > max_adverse_pips`), average
+favorable/adverse excursion, average price-after-horizon move, and TP/SL
+touch rates — plus a separate `pending_outcome_count` per bucket, since a
+freshly-deployed instance won't have any completed outcomes for the first
+few hours (the horizon has to actually elapse first). Surfaced on the
+Analytics page as a score-bucket breakdown table.
+
 ## AI's role here
 
 The AI layer (`app/services/ai_explain.py`) never computes the score or direction —
