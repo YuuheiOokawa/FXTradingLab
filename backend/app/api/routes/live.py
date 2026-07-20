@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_app_settings, get_broker, get_db
+from app.api.deps import get_app_settings, get_db, get_live_trading_broker
 from app.brokers.base import BrokerAdapter
 from app.brokers.errors import BrokerError
 from app.brokers.schemas import OrderRequest
@@ -33,7 +33,7 @@ async def live_status(
 
 
 @router.get("/account")
-async def get_live_account(broker: BrokerAdapter = Depends(get_broker)) -> dict:
+async def get_live_account(broker: BrokerAdapter = Depends(get_live_trading_broker)) -> dict:
     try:
         account = await broker.get_account()
     except BrokerError as exc:
@@ -42,7 +42,7 @@ async def get_live_account(broker: BrokerAdapter = Depends(get_broker)) -> dict:
 
 
 @router.get("/positions")
-async def get_live_positions(broker: BrokerAdapter = Depends(get_broker)) -> list[dict]:
+async def get_live_positions(broker: BrokerAdapter = Depends(get_live_trading_broker)) -> list[dict]:
     try:
         positions = await broker.get_positions()
     except BrokerError as exc:
@@ -63,7 +63,7 @@ class LiveOrderIn(BaseModel):
 @router.post("/orders")
 async def submit_live_order(
     body: LiveOrderIn,
-    broker: BrokerAdapter = Depends(get_broker),
+    broker: BrokerAdapter = Depends(get_live_trading_broker),
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     orchestrator = OrderOrchestrator(broker)

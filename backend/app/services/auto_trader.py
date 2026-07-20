@@ -18,7 +18,7 @@ import uuid
 
 import pandas as pd
 
-from app.brokers.factory import get_broker_adapter
+from app.brokers.factory import get_market_data_provider
 from app.brokers.schemas import Granularity
 from app.core.config import get_settings
 from app.db.session import AsyncSessionLocal
@@ -96,7 +96,10 @@ async def _evaluate_and_maybe_trade(orchestrator: OrderOrchestrator, instrument:
 
 
 async def run_auto_trader_loop() -> None:
-    broker = get_broker_adapter()
+    # Paper trading only ever reads prices — it never touches the trading
+    # broker — so the market-data provider is the correct (and only) source
+    # here even when MARKET_DATA_PROVIDER differs from BROKER_PROVIDER.
+    broker = get_market_data_provider()
     orchestrator = OrderOrchestrator(broker)
     settings = get_settings()
     while True:

@@ -73,8 +73,41 @@ to polling.
 
 ## Selection at runtime
 
-`app/brokers/factory.py::get_broker_adapter()` reads `BROKER_PROVIDER`
-(`mock` | `oanda` | `gmo_coin`) and required credentials from environment variables;
-if `BROKER_PROVIDER=oanda` but `OANDA_API_TOKEN` is missing, it logs a warning and
-falls back to `MockAdapter` rather than failing app startup. This is what satisfies
-"the app's main features work with zero configured API keys."
+`app/brokers/factory.py` reads `BROKER_PROVIDER` (`mock` | `oanda` | `gmo_coin`)
+and required credentials from environment variables; if `BROKER_PROVIDER=oanda`
+but `OANDA_API_TOKEN` is missing, it logs a warning and falls back to
+`MockAdapter` rather than failing app startup. This is what satisfies "the
+app's main features work with zero configured API keys."
+
+## MarketDataProvider vs TradingBroker split
+
+Added in the production-readiness pass (`docs/15_PRODUCTION_READINESS_REVIEW.md`):
+`app/brokers/base.py` splits `BrokerAdapter`'s methods into two `Protocol`s —
+`MarketDataProvider` (price reads: `get_current_price`, `get_candles`,
+`stream_prices`) and `TradingBroker` (order execution: `get_account`,
+`get_positions`, `create_order`, `close_position`). A concrete adapter
+(Mock/OANDA/GmoCoin) still implements the full `BrokerAdapter` ABC and
+therefore structurally satisfies both — no adapter code changes needed. What
+changed is `factory.py`, which now exposes `get_market_data_provider()` and
+`get_trading_broker()` separately:
+
+- `get_market_data_provider()` reads `MARKET_DATA_PROVIDER` (falls back to
+  `BROKER_PROVIDER` if unset) — used everywhere prices are read: the worker's
+  `MarketDataService`, the Signal Engine's backtest/live data fetches, and
+  paper trading's fill-price lookups (paper trading never touches the trading
+  broker at all).
+- `get_trading_broker()` always reads `BROKER_PROVIDER` directly, never
+  implicitly redirected — used only by the (currently disabled) LIVE order
+  path.
+
+**Why this is useful**: a market-data source and an order-execution target
+don't have to be the same provider — e.g. a broader/cheaper data feed for
+monitoring with a narrower, gated broker only for the actual trading account.
+
+**Why this is risky if misused**: `factory.py::_warn_if_split()` logs a
+startup warning, and `GET /system/status`'s `providers_split` field drives a
+visible banner on the System page, whenever the two differ — because the
+displayed price and the price an order would actually fill at can diverge
+(spread/latency skew), and instrument symbols may not map 1:1 across
+providers (e.g. one uses `USD_JPY`, another `USDJPY`). This is surfaced
+loudly rather than silently, by design.

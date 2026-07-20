@@ -144,6 +144,8 @@ export interface WinRateBreakdown {
 
 export interface SystemStatus {
   broker_provider: string;
+  market_data_provider: string;
+  providers_split: boolean;
   broker_environment: string;
   broker_connected: boolean;
   kill_switch_active: boolean;

@@ -12,7 +12,7 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app.brokers.factory import get_broker_adapter
+from app.brokers.factory import get_market_data_provider
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.core.redis_client import get_redis
@@ -25,12 +25,13 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     setup_logging()
     settings = get_settings()
-    broker = get_broker_adapter()
+    market_data_broker = get_market_data_provider()
     redis = get_redis()
 
     logger.info(
-        "worker starting: broker_provider=%s environment=%s watchlist=%s",
-        broker.provider,
+        "worker starting: market_data_provider=%s broker_provider=%s environment=%s watchlist=%s",
+        market_data_broker.provider,
+        settings.broker_provider,
         settings.broker_environment,
         settings.watchlist,
     )
@@ -39,7 +40,7 @@ async def main() -> None:
     scheduler.add_job(retention.run, "cron", hour=3, minute=0, id="retention")
     scheduler.start()
 
-    market_data = MarketDataService(broker, redis)
+    market_data = MarketDataService(market_data_broker, redis)
 
     # The FULL_AUTO risk->signal->order evaluation loop (docs/10_RISK_MANAGEMENT.md)
     # is registered here once enabled — see app/services/auto_trader.py.

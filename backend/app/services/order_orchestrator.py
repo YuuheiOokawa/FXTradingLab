@@ -82,8 +82,19 @@ class OrderOutcome:
 
 
 class OrderOrchestrator:
-    def __init__(self, broker: BrokerAdapter, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        broker: BrokerAdapter,
+        settings: Settings | None = None,
+        trading_broker: BrokerAdapter | None = None,
+    ) -> None:
+        """`broker` is the market-data source used for every price read (paper
+        fills, live account/position display). `trading_broker` (defaults to
+        `broker` when not given) is where LIVE orders actually get submitted —
+        see docs/15_PRODUCTION_READINESS_REVIEW.md "BrokerAdapter split". Paper
+        trading never touches `trading_broker` at all."""
         self._broker = broker
+        self._trading_broker = trading_broker or broker
         self._settings = settings or get_settings()
 
     # ------------------------------------------------------------------ paper --
@@ -265,11 +276,14 @@ class OrderOrchestrator:
             raise LiveTradingDisabled(missing_gates)
 
         # Real implementation would mirror submit_paper_order's RiskContext assembly
-        # using broker.get_account()/get_positions() instead of the paper tables,
-        # then call self._broker.create_order(order) only after RiskEngine approval.
-        # Left minimal here: this path cannot be exercised without a real funded
-        # broker account, which this build environment does not have (see
-        # docs/14_IMPLEMENTATION_PLAN.md "Known gaps").
+        # using self._trading_broker.get_account()/get_positions() instead of the
+        # paper tables (note: self._trading_broker, not self._broker — the order
+        # must go to the configured TRADING broker even if a different provider
+        # is used for market data, see docs/15_PRODUCTION_READINESS_REVIEW.md),
+        # then call self._trading_broker.create_order(order) only after RiskEngine
+        # approval. Left minimal here: this path cannot be exercised without a
+        # real funded broker account, which this build environment does not have
+        # (see docs/14_IMPLEMENTATION_PLAN.md "Known gaps").
         raise LiveTradingDisabled(["LIVE order execution requires a configured, funded broker account"])
 
     # ------------------------------------------------------------------ kill --

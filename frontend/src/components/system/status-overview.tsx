@@ -1,4 +1,4 @@
-import { Wifi, WifiOff } from "lucide-react";
+import { AlertTriangle, Wifi, WifiOff } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { StatTile } from "@/components/ui/stat-tile";
@@ -28,6 +28,17 @@ export function StatusOverview({ status }: { status: SystemStatus }) {
         <StatTile label="環境" value={status.broker_environment === "live" ? "LIVE" : "Practice"} />
         <StatTile label="動作モード" value={AUTO_MODE_LABEL[status.auto_mode]} />
       </div>
+
+      {status.providers_split && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-500">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>
+            価格データ提供元（{status.market_data_provider.toUpperCase()}）と発注先ブローカー（
+            {status.broker_provider.toUpperCase()}）が異なります。表示価格と約定価格にズレ（スプレッド・レイテンシ差）が生じる可能性があり、
+            銘柄コードの対応関係も要確認です。
+          </span>
+        </div>
+      )}
 
       <div className="rounded-lg border border-border bg-card p-4">
         <div className="mb-2 flex items-center justify-between">

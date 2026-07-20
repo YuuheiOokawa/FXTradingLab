@@ -38,7 +38,14 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # --- Broker selection ---
+    # `broker_provider` is used for BOTH market data and trading unless
+    # `market_data_provider` is set to something different — see
+    # docs/15_PRODUCTION_READINESS_REVIEW.md "BrokerAdapter split" and
+    # app/brokers/factory.py. Splitting them is a real capability (e.g. a wider
+    # market-data source with a narrower/gated trading broker) but carries real
+    # risk (spread/latency skew, symbol mapping) that factory.py warns about.
     broker_provider: BrokerProvider = "mock"
+    market_data_provider: BrokerProvider | None = None
     broker_environment: BrokerEnvironment = "practice"
 
     # OANDA

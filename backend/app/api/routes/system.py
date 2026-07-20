@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_broker, get_db
+from app.api.deps import get_broker, get_db, get_live_trading_broker
 from app.brokers.base import BrokerAdapter
 from app.core.config import get_settings
 from app.core.redis_client import get_redis
@@ -17,13 +17,20 @@ router = APIRouter(tags=["system"])
 
 
 @router.get("/system/status")
-async def system_status(broker: BrokerAdapter = Depends(get_broker), session: AsyncSession = Depends(get_db)) -> dict:
+async def system_status(
+    market_data_broker: BrokerAdapter = Depends(get_broker),
+    trading_broker: BrokerAdapter = Depends(get_live_trading_broker),
+    session: AsyncSession = Depends(get_db),
+) -> dict:
     settings = get_settings()
     redis = get_redis()
     broker_connected = (await redis.get("system:broker_connected")) == "1"
     risk_settings = await get_or_create_risk_settings(session)
+    providers_split = market_data_broker.provider != trading_broker.provider
     return {
-        "broker_provider": broker.provider,
+        "broker_provider": trading_broker.provider,
+        "market_data_provider": market_data_broker.provider,
+        "providers_split": providers_split,
         "broker_environment": settings.broker_environment,
         "broker_connected": broker_connected,
         "kill_switch_active": risk_settings.kill_switch_active,
