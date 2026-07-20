@@ -19,6 +19,10 @@ frontend/.turbo/
 frontend/coverage/
 frontend/next-env.d.ts
 frontend/tsconfig.tsbuildinfo
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+frontend/playwright/.cache/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

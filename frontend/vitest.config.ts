@@ -7,6 +7,10 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    // e2e/ holds @playwright/test specs, driven by `npm run test:e2e`
+    // against a live stack — vitest's own default include glob (**/*.{test,spec}.*)
+    // would otherwise try (and fail) to collect them as unit tests.
+    exclude: ["node_modules/**", "e2e/**"],
   },
   resolve: {
     alias: {
