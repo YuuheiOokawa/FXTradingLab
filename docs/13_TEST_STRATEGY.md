@@ -35,9 +35,38 @@
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every push/PR: backend lint (ruff) + type check
-(mypy) + pytest with coverage; frontend lint (eslint) + type check (tsc) + vitest;
-docker-compose config validation. Playwright smoke test is a separate, slower job.
+**Corrected during `docs/15_PRODUCTION_READINESS_REVIEW.md`**: this section
+previously overclaimed what actually runs — verified against the real
+`.github/workflows/ci.yml` rather than assumed. Current, accurate state:
+
+`.github/workflows/ci.yml` runs on every push/PR, gating the merge on:
+- Backend: `alembic upgrade head` against a real Postgres service container,
+  then `pytest --cov=app` (gating — a failing test blocks the PR).
+- Frontend: `eslint .` (gating), `tsc --noEmit` (gating), `vitest run` (gating),
+  `next build` (gating).
+- `docker compose config -q` validation (gating).
+
+Two gaps, tracked honestly rather than hidden:
+- `ruff check .` runs but is **advisory only** (`|| true`) — the codebase
+  currently has ~39 pre-existing lint findings (mostly test-file import
+  ordering and unused locals) that were not cleaned up as part of this
+  review; flipping this to gating is a follow-up, not done yet.
+- `mypy` is installed as a backend dev dependency but is **not wired into
+  CI at all** — running it manually surfaces ~33 findings, a mix of missing
+  third-party stub packages (`pandas-stubs`) and a handful of real
+  `Optional`-narrowing gaps (e.g. `Instrument | None` accessed without a
+  null check in a few route handlers) that would need fixing before this
+  could gate without immediately breaking the pipeline. Not done this pass.
+- The Playwright smoke test described below is **not automated in CI** —
+  browser verification in this review was performed manually, repeatedly,
+  against a running `docker compose` stack, not via a CI job. Wiring a
+  headless Playwright job (bring up `docker compose`, wait for `/ready`,
+  run the smoke script) is a reasonable follow-up but wasn't built this pass.
+
+A manual-trigger (`workflow_dispatch`) deployment workflow
+(`.github/workflows/deploy.yml`) is prepared for Railway/Vercel deploys but
+never fires automatically on a merge — see that file's header comment and
+`docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md` for how to use it.
 
 ## What "done" means for a PR touching trading logic
 

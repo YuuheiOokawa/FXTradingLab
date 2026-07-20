@@ -1,0 +1,72 @@
+# Manual-trigger production deploy — prepared, NOT wired to run automatically.
+#
+# This workflow only fires when a human clicks "Run workflow" in the Actions
+# tab (workflow_dispatch). It never runs on push/PR/merge to main — that is
+# deliberate: per docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md, a production deploy
+# of a trading app should always be an explicit, deliberate operator action,
+# never an automatic side effect of merging code.
+#
+# One-time setup before this can be used (see docs/17 for the full walkthrough):
+#   1. Create the `production` GitHub Environment (Settings → Environments) and
+#      optionally add required reviewers there for a second confirmation step.
+#   2. Add repo secrets: RAILWAY_TOKEN (railway.com → Account Settings → Tokens),
+#      VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID (vercel.com → Account
+#      Settings → Tokens, and `vercel link` locally once to get the IDs).
+#   3. CI (ci.yml) must already be green on the commit/branch you deploy — this
+#      workflow does not re-run tests itself.
+
+name: Deploy (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "What to deploy"
+        required: true
+        type: choice
+        options: [backend, frontend, both]
+        default: both
+
+jobs:
+  deploy-backend:
+    if: ${{ inputs.target == 'backend' || inputs.target == 'both' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+      - name: Deploy api service
+        working-directory: backend
+        run: railway up --service api --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Deploy worker service
+        working-directory: backend
+        run: railway up --service worker --detach
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      - name: Run migrations
+        working-directory: backend
+        run: railway run --service api alembic upgrade head
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  deploy-frontend:
+    if: ${{ inputs.target == 'frontend' || inputs.target == 'both' }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+      - name: Deploy to Vercel (production)
+        working-directory: frontend
+        run: |
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}

@@ -122,11 +122,46 @@ FXTradingLab/
 
 ## Deployment
 
-See `docs/12_DEPLOYMENT.md` for the full comparison. Short version: Vercel for
-the frontend, Railway (or Render/Fly) for the backend (API + worker as two
+See `docs/12_DEPLOYMENT.md` for the full platform comparison and
+`docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md` for the complete step-by-step guide
+(cost estimate, env vars, verification, backups, rollback). Short version:
+Vercel for the frontend, Railway for the backend (API + worker as two
 always-on services from one Docker image, needed because the market-data
 poller and WebSocket fan-out can't run on Vercel's serverless functions),
 managed Postgres + Redis.
+
+Nothing below runs automatically — these are the exact commands to run
+yourself once you have accounts on both platforms (this repo/environment has
+no deploy credentials for either).
+
+```bash
+# One-time CLI setup
+npm install -g @railway/cli   # or: brew install railway
+npm install -g vercel
+
+# Railway: log in, create a project, add Postgres + Redis
+railway login
+railway init                                   # in repo root
+railway add --database postgres
+railway add --database redis
+
+# Railway: create the two backend services (root directory = backend)
+# — the dashboard is the easier way to set "Root Directory: backend" for
+#   each service and the worker's Start Command override; see docs/17 §2.
+railway up --service api                       # from backend/, after linking
+railway run --service api alembic upgrade head # run the initial migration
+
+# Vercel: deploy the frontend (root directory = frontend)
+cd frontend
+vercel link
+vercel env add NEXT_PUBLIC_API_URL production
+vercel env add NEXT_PUBLIC_APP_API_TOKEN production
+vercel --prod
+```
+
+Full explanation of every step (including the worker's manual start-command
+override, `ALLOWED_ORIGINS` wiring, and post-deploy verification) is in
+`docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md`.
 
 ## License / disclaimer
 
