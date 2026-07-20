@@ -98,6 +98,7 @@ this pass didn't close:
 - Replay session/trade persistence + qualitative judgment scoring.
 - Signal outcome history tracking (did a BUY 80+ signal actually work out?)
   and the corresponding Analytics score-bucket accuracy view.
-- Walk-Forward Analysis (designed, not implemented).
+- ~~Walk-Forward Analysis (designed, not implemented)~~ — implemented in a
+  later pass; see `docs/09_BACKTEST_DESIGN.md` "Walk-Forward Analysis".
 - Paper trading slippage model and limit/stop order types.
 - No actual cloud deployment executed from this environment.

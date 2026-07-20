@@ -12,6 +12,7 @@ from app.brokers.base import BrokerAdapter
 from app.brokers.schemas import Granularity
 from app.db.models.trading import Backtest, BacktestTrade
 from app.services.backtest.engine import BacktestConfig, BacktestEngine
+from app.services.backtest.walk_forward import ParamGrid, WalkForwardConfig, run_walk_forward
 
 router = APIRouter(prefix="/backtests", tags=["backtest"])
 
@@ -123,6 +124,115 @@ async def run_backtest(
         "summary": result.summary,
         "equity_curve": result.equity_curve,
         "trade_count": len(result.trades),
+    }
+
+
+class ParamGridIn(BaseModel):
+    # Deliberately small by default — each combination runs a full backtest
+    # per window (see MAX_GRID_CANDIDATES below); this is a synchronous
+    # request (docs/09_BACKTEST_DESIGN.md's rationale for POST /backtests
+    # applies here too, more so). Widen the grid explicitly if you want a
+    # deeper search and are prepared to wait longer.
+    stop_loss_pips: list[float] = Field(default_factory=lambda: [20.0, 30.0])
+    take_profit_pips: list[float] = Field(default_factory=lambda: [40.0, 60.0])
+    min_score_threshold: list[int] = Field(default_factory=lambda: [60])
+
+
+class WalkForwardRequestIn(BaseModel):
+    pair: str
+    timeframe: Granularity = Granularity.M15
+    candle_count: int = Field(default=1200, ge=700, le=5000)
+    train_bars: int = Field(default=400, ge=100)
+    test_bars: int = Field(default=120, ge=30)
+    step_bars: int | None = Field(default=None, ge=1)
+    initial_capital: float = 1_000_000.0
+    risk_pct: float = 1.0
+    spread_pips: float = 1.5
+    slippage_pips: float = 0.3
+    commission_per_lot: float = 0.0
+    param_grid: ParamGridIn = Field(default_factory=ParamGridIn)
+
+
+MAX_GRID_CANDIDATES = 60  # bounds request cost: candidates * windows full-engine runs
+
+
+@router.post("/walk-forward")
+async def run_walk_forward_analysis(
+    body: WalkForwardRequestIn,
+    broker: BrokerAdapter = Depends(get_broker),
+) -> dict:
+    """Walk-forward analysis (docs/09_BACKTEST_DESIGN.md, docs/14_IMPLEMENTATION_PLAN.md).
+
+    Deliberately stateless / not persisted to the DB — unlike `POST
+    /backtests`, this is treated as an exploratory analysis tool rather than
+    a saved run. It returns per-window results, a combined out-of-sample
+    curve, parameter-stability flags, and an overfitting warning where
+    applicable; it never returns anything that reads as "apply these
+    parameters" — see `app/services/backtest/walk_forward.py`'s module
+    docstring for why.
+    """
+    grid = ParamGrid(
+        stop_loss_pips=body.param_grid.stop_loss_pips,
+        take_profit_pips=body.param_grid.take_profit_pips,
+        min_score_threshold=body.param_grid.min_score_threshold,
+    )
+    candidate_count = len(grid.candidates())
+    if candidate_count > MAX_GRID_CANDIDATES:
+        raise HTTPException(
+            400,
+            f"param_grid has {candidate_count} combinations, exceeding the {MAX_GRID_CANDIDATES} cap "
+            "(each combination runs a full backtest per window) — narrow the grid.",
+        )
+
+    candles = await broker.get_candles(body.pair, body.timeframe, body.candle_count)
+    higher_tf_candles = {}
+    for label, gran in HIGHER_TF.get(body.timeframe, {}).items():
+        higher_tf_candles[label] = await broker.get_candles(body.pair, gran, body.candle_count)
+
+    config = WalkForwardConfig(
+        pair=body.pair,
+        timeframe=body.timeframe,
+        train_bars=body.train_bars,
+        test_bars=body.test_bars,
+        step_bars=body.step_bars,
+        initial_capital=body.initial_capital,
+        risk_pct=body.risk_pct,
+        spread_pips=body.spread_pips,
+        slippage_pips=body.slippage_pips,
+        commission_per_lot=body.commission_per_lot,
+        param_grid=grid,
+    )
+    result = run_walk_forward(config, candles, higher_tf_candles)
+
+    return {
+        "windows": [
+            {
+                "window_index": w.window_index,
+                "train_start": w.train_start.isoformat(),
+                "train_end": w.train_end.isoformat(),
+                "test_start": w.test_start.isoformat(),
+                "test_end": w.test_end.isoformat(),
+                "chosen_params": w.chosen_params,
+                "train_metrics": w.train_metrics,
+                "test_metrics": w.test_metrics,
+                "candidates_evaluated": w.candidates_evaluated,
+            }
+            for w in result.windows
+        ],
+        "combined_test_metrics": result.combined_test_metrics,
+        "combined_test_equity_curve": result.combined_test_equity_curve,
+        "parameter_stability": [
+            {
+                "param": s.param,
+                "values_by_window": s.values_by_window,
+                "most_common_value": s.most_common_value,
+                "agreement_ratio": s.agreement_ratio,
+                "is_stable": s.is_stable,
+            }
+            for s in result.parameter_stability
+        ],
+        "overfitting_warning": result.overfitting_warning,
+        "disclaimer": result.disclaimer,
     }
 
 

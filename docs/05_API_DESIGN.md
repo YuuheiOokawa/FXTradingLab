@@ -35,6 +35,10 @@ disabled in local dev for convenience.
 - `GET /backtests/{id}` — summary stats + equity curve.
 - `GET /backtests/{id}/trades` — trade list; `GET /backtests/{id}/trades/{trade_id}`
   for the entry/exit rationale.
+- `POST /backtests/walk-forward` — Walk-Forward Analysis (docs/09_BACKTEST_DESIGN.md).
+  Synchronous and, for a non-trivial parameter grid × window count, genuinely slow
+  (tens of seconds) — this runs a full backtest per grid candidate per window. Not
+  persisted to the DB. Response never contains a single "recommended" parameter set.
 
 ### Paper trading
 - `GET /paper/account` — virtual balance/equity.

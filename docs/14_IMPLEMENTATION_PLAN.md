@@ -35,8 +35,10 @@ keep it updated as work lands.
 - Discord/LINE/email notification channels are interface-ready
   (`app/services/notifications/channel.py`) but only `in_app` has a concrete
   implementation in v1.
-- Walk-Forward Analysis is designed as an extension of the backtest engine's
-  `run_range()` primitive but not implemented as a UI-facing feature yet.
+- Walk-Forward Analysis: implemented (`app/services/backtest/walk_forward.py`,
+  `POST /backtests/walk-forward`, and a UI panel on the Backtest page) — see
+  `docs/09_BACKTEST_DESIGN.md` "Walk-Forward Analysis". Not persisted to the
+  DB (treated as an exploratory tool, unlike `POST /backtests`).
 - No automated cloud deployment was executed as part of this build — Docker images
   and IaC-adjacent config (Railway/Vercel project files) are provided; an operator
   with cloud accounts must run the actual `railway up` / `vercel deploy` and set

@@ -8,6 +8,7 @@ import { api, ApiError } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BacktestForm, type BacktestFormValues } from "@/components/backtest/backtest-form";
 import { BacktestResultsPanel } from "@/components/backtest/results-panel";
+import { WalkForwardPanel } from "@/components/backtest/walk-forward-panel";
 import type { BacktestResult } from "@/types/api";
 
 export default function BacktestPage() {
@@ -52,6 +53,8 @@ export default function BacktestPage() {
       {mutation.data && (
         <BacktestResultsPanel backtestId={mutation.data.id} result={mutation.data} inSampleRatio={inSampleRatio} />
       )}
+
+      <WalkForwardPanel />
     </div>
   );
 }

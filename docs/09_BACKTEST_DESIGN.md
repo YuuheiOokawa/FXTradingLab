@@ -43,13 +43,42 @@ hides overfitting.
 
 **Corrected during `docs/15_PRODUCTION_READINESS_REVIEW.md`**: this doc previously
 claimed a `run_range()` primitive existed as a Walk-Forward Analysis building
-block — it does not; `run()` only ever does a single IS/OOS split over the whole
-series handed to it, with no notion of rolling windows. Walk-Forward Analysis
-(docs/14_IMPLEMENTATION_PLAN.md) remains genuinely unimplemented, not merely
-"missing its outer loop" — building it would mean adding a `WalkForwardRunner` that
-calls `BacktestEngine.run()` repeatedly over successive rolling slices of the
-candle series (each call already gets its own IS/OOS split for free), not calling
-a primitive that doesn't exist yet.
+block — it did not; `run()` only ever does a single IS/OOS split over the whole
+series handed to it, with no notion of rolling windows.
+
+## Walk-Forward Analysis
+
+`app/services/backtest/walk_forward.py::run_walk_forward()` — implemented as
+the missing outer loop described above: it calls `BacktestEngine.run()`
+repeatedly over successive rolling slices of the candle series, each slice
+sized and `in_sample_ratio`-configured so the engine's existing IS/OOS split
+lands exactly at that window's train/test boundary (no second execution
+path).
+
+Per window: a small parameter grid (`stop_loss_pips` × `take_profit_pips` ×
+`min_score_threshold`) is searched using **only** that window's training
+(in-sample) segment; the single best-on-training candidate's
+already-computed out-of-sample segment becomes that window's reported test
+result, untouched by the search. The window then rolls forward by
+`step_bars` (defaults to the test window size — non-overlapping) and
+repeats.
+
+Output: per-window chosen parameters + train vs. test metrics, a combined
+equity curve stitched from every window's test segment only (the closest
+approximation of "what would have actually happened" under repeated
+re-optimization), a parameter-stability table (does the search keep
+choosing the same value, or a different one every window — the latter is a
+classic overfitting signature), and an explicit `overfitting_warning`
+string when combined out-of-sample performance is far below what the same
+chosen parameters achieved on their own training windows, or when parameter
+selection is unstable.
+
+**Hard requirement honored**: nothing in the response is, or reads as, "the
+best parameters — apply these." `POST /backtests/walk-forward` never writes
+to any live/paper trading config; adopting a set of parameters after reading
+this output is a decision a human makes, not something the endpoint does.
+Also deliberately not persisted to the DB (unlike `POST /backtests`) — this
+is an exploratory analysis tool, not a saved run, at least in this pass.
 
 ## Metrics computed
 

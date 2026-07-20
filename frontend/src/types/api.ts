@@ -83,6 +83,35 @@ export interface BacktestResult {
   trade_count: number;
 }
 
+export interface WalkForwardWindow {
+  window_index: number;
+  train_start: string;
+  train_end: string;
+  test_start: string;
+  test_end: string;
+  chosen_params: { stop_loss_pips: number; take_profit_pips: number; min_score_threshold: number };
+  train_metrics: BacktestSummaryMetrics;
+  test_metrics: BacktestSummaryMetrics;
+  candidates_evaluated: Record<string, number>[];
+}
+
+export interface WalkForwardParameterStability {
+  param: string;
+  values_by_window: (number | string)[];
+  most_common_value: number | string;
+  agreement_ratio: number;
+  is_stable: boolean;
+}
+
+export interface WalkForwardResult {
+  windows: WalkForwardWindow[];
+  combined_test_metrics: BacktestSummaryMetrics;
+  combined_test_equity_curve: { time: string; equity: number }[];
+  parameter_stability: WalkForwardParameterStability[];
+  overfitting_warning: string | null;
+  disclaimer: string;
+}
+
 export interface BacktestTrade {
   id: string;
   segment: "in_sample" | "out_of_sample";
