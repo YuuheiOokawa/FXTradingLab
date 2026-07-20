@@ -8,9 +8,10 @@ import asyncio
 import logging
 
 import orjson
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.core.redis_client import get_redis
+from app.ws.auth import check_ws_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,6 +28,9 @@ async def _subscribe(pubsub, instruments: set[str]) -> None:
 
 @router.websocket("/ws/prices")
 async def ws_prices(websocket: WebSocket) -> None:
+    if not await check_ws_auth(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     await websocket.accept()
     redis = get_redis()
     pubsub = redis.pubsub()

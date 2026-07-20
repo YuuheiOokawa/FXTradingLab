@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.core.redis_client import get_redis
+from app.ws.auth import check_ws_auth
 
 router = APIRouter()
 
@@ -16,6 +17,9 @@ SYSTEM_CHANNEL = "system:events"
 
 @router.websocket("/ws/system")
 async def ws_system(websocket: WebSocket) -> None:
+    if not await check_ws_auth(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     await websocket.accept()
     redis = get_redis()
     pubsub = redis.pubsub()

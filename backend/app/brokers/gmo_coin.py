@@ -1,16 +1,32 @@
 """GMO Coin 外国為替FX adapter — documented stub, not yet implemented.
 
+IMPORTANT — do not confuse GMO Coin's two separate API products:
+- Crypto API (BTC_JPY, ETH_JPY, ...): https://api.coin.z.com/docs/
+- FX API (USD_JPY, EUR_JPY, ...):      https://api.coin.z.com/fxdocs/
+  (docs live under api.coin.z.com/fxdocs; the actual request base host is
+  forex-api.coin.z.com per those docs — verify the exact paths directly before
+  implementing, see docs/16_BROKER_SELECTION_REVIEW.md for the verification
+  trail). These are legally and technically distinct: GMO Coin, Inc. holds both
+  a crypto-exchange registration and, since its Oct 2023 FX launch, a separate
+  Financial Instruments Business Operator registration that permits margin FX.
+  Pointing this adapter at the crypto host/symbols by mistake would silently
+  trade the wrong asset class — this is exactly the kind of mistake
+  docs/16_BROKER_SELECTION_REVIEW.md's re-verification pass was checking for.
+
 docs/06_BROKER_API_DESIGN.md explains why this is the recommended real path to an
 actual Japan-resident *live* account (unlike OANDA Japan's API, it doesn't require a
-Gold-tier balance gate): GMO Coin exposes a genuinely open individual-accessible
-REST API at https://api.coin.z.com/fxdocs/ with Public (unauthenticated market data)
-and Private (HMAC-signed, account/order) endpoint groups.
+Gold-tier balance gate): GMO Coin's FX API has Public (unauthenticated market data)
+and Private (HMAC-signed, account/order) endpoint groups, 21 currency pairs as of
+2026-05 including all four of this app's default watchlist pairs.
 
 This class exists to prove the `BrokerAdapter` boundary supports a second real
 broker without changing anything outside `app/brokers/` — implementing it for real
-requires a funded GMO Coin account to test against, which isn't available in this
-build environment. Each method raises `NotImplementedError` with a pointer to the
-relevant fxdocs section so a future implementer has the exact shape to fill in.
+requires (a) a funded GMO Coin FX account to test against, which isn't available in
+this build environment, and (b) a direct read of the live fxdocs pages to confirm
+exact endpoint paths/payload shapes (automated fetches of api.coin.z.com hit
+anti-bot protection during research — see docs/16). Each method raises
+`NotImplementedError` with a pointer to the relevant fxdocs section so a future
+implementer has the exact shape to fill in.
 """
 from __future__ import annotations
 

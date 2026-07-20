@@ -21,8 +21,15 @@ class Settings(BaseSettings):
 
     # --- App ---
     app_env: AppEnv = "development"
-    app_api_token: str | None = Field(default=None, description="Bearer token for /api/v1/* in non-dev envs")
+    app_api_token: str | None = Field(default=None, description="Bearer token for /api/v1/* and /ws/* in non-dev envs")
     log_level: str = "INFO"
+    # Comma-separated allowed CORS origins for non-development environments, e.g.
+    # "https://fxlab.example.com". Deliberately NOT wildcarded outside dev — see
+    # docs/15_PRODUCTION_READINESS_REVIEW.md "Security". Empty in production means
+    # the browser frontend's own origin must be explicitly listed here or every
+    # request will be blocked; this is intentionally a hard failure mode rather
+    # than silently allowing "*" against a real deployment.
+    allowed_origins: str = ""
 
     # --- Database ---
     database_url: str = "postgresql+asyncpg://fxlab:fxlab@localhost:5432/fxlab"
@@ -76,6 +83,10 @@ class Settings(BaseSettings):
     @property
     def auth_required(self) -> bool:
         return self.app_env != "development"
+
+    @property
+    def allowed_origins_list(self) -> list[str]:
+        return [s.strip() for s in self.allowed_origins.split(",") if s.strip()]
 
 
 @lru_cache

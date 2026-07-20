@@ -46,7 +46,12 @@ export const api = {
 
 export function wsUrl(path: string): string {
   const httpBase = API_BASE.replace(/^http/, "ws");
-  return `${httpBase}${path}`;
+  const url = `${httpBase}${path}`;
+  // Browsers can't set an Authorization header on a WebSocket handshake, so the
+  // backend accepts the same token as a `?token=` query param instead
+  // (backend/app/ws/auth.py). No-op when APP_API_TOKEN isn't configured (dev).
+  if (!API_TOKEN) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(API_TOKEN)}`;
 }
 
 export { API_BASE };

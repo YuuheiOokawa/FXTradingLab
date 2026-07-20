@@ -18,11 +18,45 @@
 ## AuthN/Z
 
 - Single-operator model: `APP_API_TOKEN` is a bearer token required on all
-  `/api/v1/*` and `/ws/*` requests when `APP_ENV != development`. Local dev skips this
-  for convenience (documented, not silently different in prod — enforced by a startup
-  assertion that refuses to boot with auth disabled while `APP_ENV=production`).
+  `/api/v1/*` requests when `APP_ENV != development` (`app/api/deps.py::require_auth`).
+  WebSocket endpoints (`/ws/prices`, `/ws/system`) can't carry a request header on
+  the browser handshake, so they instead require the same token as a `?token=`
+  query param, checked by `app/ws/auth.py::check_ws_auth` before `accept()` — this
+  was found to be **only documented, not actually implemented**, during the
+  production-readiness review (`docs/15_PRODUCTION_READINESS_REVIEW.md`) and has
+  since been fixed and covered by `tests/test_ws_auth.py`. Local dev skips both for
+  convenience (documented, not silently different in prod — enforced by a startup
+  assertion that refuses to boot with REST auth disabled while `APP_ENV=production`).
+- The frontend sends this same token in two ways: `Authorization: Bearer` for REST
+  (`frontend/src/lib/api.ts`) and `?token=` for WebSocket (`wsUrl()` in the same
+  file) — both read from `NEXT_PUBLIC_APP_API_TOKEN`. See "Frontend login gate"
+  below for how an operator actually gets that token into the browser.
 - The `users` table exists for future multi-operator support but is not wired to a
   login flow in v1 — this is called out explicitly as a non-goal in `01_REQUIREMENTS.md`.
+  What v1 *does* have (added in the production-readiness pass) is a lightweight
+  password-style gate in front of the whole frontend — see below — which is enough
+  to satisfy "don't expose an internet-facing personal app with zero auth prompt"
+  without building real multi-user accounts.
+
+## Frontend login gate
+
+`frontend/src/app/login/page.tsx` prompts for the same `APP_API_TOKEN` value the
+backend expects, stores it in a cookie (`fxlab_token`, `httpOnly: false` since
+client-side JS needs to attach it to `fetch`/WebSocket calls, `sameSite: strict`),
+and `frontend/src/middleware.ts` redirects every other route to `/login` if that
+cookie is missing. This is not a real multi-user auth system — it's a single
+shared secret, appropriate for the single-operator model this app targets — but it
+means the app is never reachable by an anonymous visitor who just finds the URL.
+Skipped entirely in development (`NEXT_PUBLIC_APP_API_TOKEN` unset ⇒ middleware
+no-ops) so local iteration doesn't require logging in every time.
+
+## CORS
+
+- `ALLOWED_ORIGINS` (comma-separated) controls which browser origins may call the
+  API in non-development environments; unset means CORS blocks every cross-origin
+  request (safe-by-default), not a wildcard. Same-origin deployments (frontend and
+  backend behind one reverse-proxy domain) don't need this set at all. Development
+  allows `*` for convenience. See `app/main.py`.
 
 ## Transport
 

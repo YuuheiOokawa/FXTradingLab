@@ -1,5 +1,12 @@
 # 06. Broker API Design
 
+> **Re-verified in docs/16_BROKER_SELECTION_REVIEW.md** — a dedicated pass
+> specifically checking whether "GMO Coin" (known primarily as a crypto
+> exchange) was mistakenly credited with an FX API that's actually
+> crypto-only. Conclusion: the FX API is real and separate from the crypto
+> API (different docs, different request host). See docs/16 for full sourcing
+> and the one precision fix that came out of it (exact host name).
+
 ## Research findings (2026)
 
 - **OANDA Japan (oanda.jp)** does offer a REST API to individual residents

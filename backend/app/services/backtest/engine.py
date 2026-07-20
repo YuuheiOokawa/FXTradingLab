@@ -2,7 +2,11 @@
 
 Deliberately not a pure vectorized backtest: exit logic (SL/TP/trailing) needs
 intrabar high/low, not just close, to be realistic. Each bar's signal evaluation
-only ever sees candles up to and including that bar — no lookahead.
+only ever sees entry-timeframe candles up to and including that bar, and
+higher-timeframe candles that have actually *closed* by that bar's time — see
+`closed_higher_tf_window()`, which exists specifically to prevent a
+still-forming higher-timeframe bar's eventual close from leaking into an
+earlier decision (docs/15_PRODUCTION_READINESS_REVIEW.md).
 """
 from __future__ import annotations
 
@@ -13,7 +17,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from app.brokers.schemas import Candle, Granularity
+from app.brokers.schemas import GRANULARITY_SECONDS, Candle, Granularity
 from app.services.backtest.metrics import compute_metrics
 from app.services.signal_engine import Reason, SignalResult, evaluate
 
@@ -25,6 +29,28 @@ INDICATOR_WINDOW = 260  # bars of context handed to the signal engine each step 
 
 def pip_size_for(pair: str) -> float:
     return 0.01 if pair.endswith("JPY") else 0.0001
+
+
+def closed_higher_tf_window(
+    higher_df: pd.DataFrame,
+    higher_times: np.ndarray,
+    duration: pd.Timedelta,
+    entry_open_time: pd.Timestamp,
+    window: int = 260,
+) -> pd.DataFrame | None:
+    """The slice of `higher_df` that is safe to read when deciding an entry at
+    `entry_open_time` — every returned bar has fully closed (open_time +
+    duration <= entry_open_time) by that point. A higher-timeframe bar's OHLC
+    always represents its true final close (no partial-bar simulation), so
+    including a still-forming bar here would leak its eventual close into a
+    decision made before that bar actually closed. Returns None if no bar has
+    closed yet.
+    """
+    cutoff = entry_open_time - duration
+    idx = int(np.searchsorted(higher_times, cutoff, side="right"))
+    if idx == 0:
+        return None
+    return higher_df.iloc[max(0, idx - window) : idx]
 
 
 @dataclass
@@ -92,6 +118,18 @@ class BacktestEngine:
         df = _candles_to_df(candles)
         higher_dfs = {tf: _candles_to_df(c) for tf, c in higher_tf_candles.items()}
         higher_times = {tf: d["open_time"].to_numpy() for tf, d in higher_dfs.items()}
+        # A higher-timeframe bar's OHLC in our candle data always represents its
+        # true final close — there is no partial-bar simulation. So a bar is only
+        # safe to read at entry-bar time `E` once it has actually closed, i.e.
+        # bar.open_time + bar.duration <= E. Including the still-forming
+        # higher-tf bar (open_time <= E < open_time + duration) would leak that
+        # bar's eventual close — a real look-ahead bug fixed here; see
+        # docs/15_PRODUCTION_READINESS_REVIEW.md "Signal Engine" section.
+        higher_durations = {
+            tf: pd.Timedelta(seconds=GRANULARITY_SECONDS[c[0].granularity])
+            for tf, c in higher_tf_candles.items()
+            if c
+        }
 
         split_index = int(len(df) * self.config.in_sample_ratio)
 
@@ -118,10 +156,12 @@ class BacktestEngine:
                 window = df.iloc[max(0, i - INDICATOR_WINDOW + 1) : i + 1]
                 higher_window = {}
                 for tf, d in higher_dfs.items():
-                    idx = int(np.searchsorted(higher_times[tf], row["open_time"], side="right"))
-                    if idx == 0:
+                    duration = higher_durations.get(tf)
+                    if duration is None:
                         continue
-                    higher_window[tf] = d.iloc[max(0, idx - INDICATOR_WINDOW) : idx]
+                    sliced = closed_higher_tf_window(d, higher_times[tf], duration, row["open_time"], INDICATOR_WINDOW)
+                    if sliced is not None:
+                        higher_window[tf] = sliced
                 signal = evaluate(window, higher_window)
                 if signal.score >= self.config.min_score_threshold:
                     position = self._open_position(signal, row, segment)

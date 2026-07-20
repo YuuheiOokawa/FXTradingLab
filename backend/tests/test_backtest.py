@@ -12,7 +12,13 @@ import pytest
 
 from app.brokers.mock import generate_candles
 from app.brokers.schemas import Granularity
-from app.services.backtest.engine import BacktestConfig, BacktestEngine, TradeRecord, pip_size_for
+from app.services.backtest.engine import (
+    BacktestConfig,
+    BacktestEngine,
+    TradeRecord,
+    closed_higher_tf_window,
+    pip_size_for,
+)
 from app.services.backtest.metrics import compute_metrics
 
 
@@ -129,3 +135,39 @@ def test_trailing_stop_moves_only_in_favorable_direction():
     position, _, trail, closed = engine._update_open_position(position, row_down, balance=0.0, trail_extreme=trail)
     assert closed is False
     assert position.stop_loss == tighter_stop  # must not loosen when price pulls back
+
+
+def test_closed_higher_tf_window_excludes_the_still_forming_bar():
+    """Regression test for a real look-ahead bug (docs/15_PRODUCTION_READINESS_REVIEW.md):
+    a higher-timeframe bar's OHLC always represents its true final close (no
+    partial-bar simulation), so a bar that has not yet closed relative to the
+    entry-bar time must never be included in the window handed to the signal
+    engine — doing so would leak that bar's eventual close into a decision made
+    before it actually happened."""
+    h1_df = pd.DataFrame(
+        {
+            "open_time": pd.to_datetime(["2026-01-01T13:00:00Z", "2026-01-01T14:00:00Z", "2026-01-01T15:00:00Z"]),
+            "close": [150.0, 151.0, 999.0],  # the 15:00 bar's close must never leak into a 14:15 decision
+        }
+    )
+    h1_times = h1_df["open_time"].to_numpy()
+    duration = pd.Timedelta(hours=1)
+
+    # Entry bar at 14:15 — the 14:00 H1 bar is still forming (closes at 15:00),
+    # so only the 13:00 bar has actually closed by then.
+    entry_time = pd.Timestamp("2026-01-01T14:15:00Z")
+    window = closed_higher_tf_window(h1_df, h1_times, duration, entry_time)
+    assert window is not None
+    assert list(window["close"]) == [150.0]
+
+    # Entry bar at 15:00 exactly — now the 14:00 bar has fully closed (its
+    # close time 15:00 <= entry time 15:00) and becomes usable; the 15:00 bar
+    # itself has just opened and is excluded.
+    entry_time_2 = pd.Timestamp("2026-01-01T15:00:00Z")
+    window_2 = closed_higher_tf_window(h1_df, h1_times, duration, entry_time_2)
+    assert list(window_2["close"]) == [150.0, 151.0]
+
+    # Before any H1 bar has closed at all.
+    entry_time_3 = pd.Timestamp("2026-01-01T13:30:00Z")
+    window_3 = closed_higher_tf_window(h1_df, h1_times, duration, entry_time_3)
+    assert window_3 is None
