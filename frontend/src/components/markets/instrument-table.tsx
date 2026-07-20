@@ -26,6 +26,7 @@ export function InstrumentTable({ instruments }: { instruments: Instrument[] }) 
         <thead>
           <tr className="border-b border-border text-left text-xs text-muted-foreground">
             <th className="py-2 pr-4 font-medium">通貨ペア</th>
+            <th className="py-2 pr-4 font-medium">状態</th>
             <th className="py-2 pr-4 font-medium">Bid</th>
             <th className="py-2 pr-4 font-medium">Ask</th>
             <th className="py-2 pr-4 font-medium">Mid</th>

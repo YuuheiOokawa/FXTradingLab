@@ -57,6 +57,17 @@ class PriceSocketManager {
     ws.onopen = () => {
       this.connecting = false;
       this.reconnectDelay = 1000;
+      // Flush every instrument subscribed so far — including ones requested
+      // while the handshake was still in flight, which would otherwise never
+      // get a "subscribe" message sent at all (the bug this fixes: a
+      // subscribe() call arriving during CONNECTING silently dropped its
+      // message since the old code only sent it when readyState was already
+      // OPEN, and never retried). Re-subscribing an instrument the backend
+      // already has via the initial `?instruments=` query param is harmless —
+      // Redis psubscribe on an existing pattern is a no-op.
+      if (this.subscribedInstruments.size > 0) {
+        ws.send(JSON.stringify({ type: "subscribe", instruments: Array.from(this.subscribedInstruments) }));
+      }
     };
     ws.onmessage = (event) => {
       try {
@@ -75,6 +86,16 @@ class PriceSocketManager {
       }
     };
     ws.onerror = () => ws.close();
+  }
+
+  /** For LIVE/STALE/DISCONNECTED indicators (docs/15_PRODUCTION_READINESS_REVIEW.md
+   * "Realtime resilience") — never show a price as live if the socket itself
+   * isn't actually open, regardless of how recent the last tick looked. */
+  getConnectionState(): "open" | "connecting" | "closed" {
+    if (!this.ws) return "closed";
+    if (this.ws.readyState === WebSocket.OPEN) return "open";
+    if (this.ws.readyState === WebSocket.CONNECTING) return "connecting";
+    return "closed";
   }
 
   subscribe(instruments: string[], listener: Listener): () => void {

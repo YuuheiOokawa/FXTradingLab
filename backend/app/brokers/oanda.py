@@ -14,11 +14,15 @@ Credentials come only from environment variables (`OANDA_API_TOKEN`,
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from app.brokers.base import BrokerAdapter
 from app.brokers.errors import (
@@ -76,15 +80,43 @@ class OandaAdapter(BrokerAdapter):
         if resp.status_code >= 400:
             raise BrokerOrderRejected(resp.text)
 
+    async def _get_with_retry(self, path: str, params: dict | None = None, max_attempts: int = 3) -> httpx.Response:
+        """Retry with backoff for idempotent GET requests only — never applied
+        to create_order/close_position, where an automatic retry after an
+        ambiguous failure could submit a duplicate order (docs/15_PRODUCTION_READINESS_REVIEW.md
+        "OANDA Adapter production-quality pass"; idempotency for order
+        submission itself is handled one layer up, by OrderOrchestrator's
+        idempotency_key, not by retrying here)."""
+        delay = 0.5
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with await self._client(self._rest_base) as client:
+                    resp = await client.get(path, params=params)
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    last_exc = BrokerRateLimitError if resp.status_code == 429 else BrokerConnectionError
+                    if attempt < max_attempts:
+                        logger.warning("OANDA GET %s returned %s, retrying (attempt %d/%d)", path, resp.status_code, attempt, max_attempts)
+                        await asyncio.sleep(delay)
+                        delay *= 2
+                        continue
+                return resp
+            except httpx.RequestError as exc:
+                last_exc = exc
+                if attempt < max_attempts:
+                    logger.warning("OANDA GET %s network error, retrying (attempt %d/%d): %s", path, attempt, max_attempts, exc)
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                raise BrokerConnectionError(str(exc)) from exc
+        # Unreachable in practice (loop always returns or raises), but keeps
+        # type checkers happy and fails safe if max_attempts were ever 0.
+        raise BrokerConnectionError(f"OANDA GET {path} failed after {max_attempts} attempts: {last_exc}")
+
     async def get_current_price(self, instrument: str) -> PriceQuote:
-        try:
-            async with await self._client(self._rest_base) as client:
-                resp = await client.get(
-                    f"/v3/accounts/{self._account_id}/pricing",
-                    params={"instruments": instrument},
-                )
-        except httpx.RequestError as exc:
-            raise BrokerConnectionError(str(exc)) from exc
+        resp = await self._get_with_retry(
+            f"/v3/accounts/{self._account_id}/pricing", params={"instruments": instrument}
+        )
         self._raise_for_status(resp)
         data = resp.json()
         prices = data.get("prices", [])
@@ -108,11 +140,7 @@ class OandaAdapter(BrokerAdapter):
             params["count"] = count
         else:
             params["count"] = count
-        try:
-            async with await self._client(self._rest_base) as client:
-                resp = await client.get(f"/v3/instruments/{instrument}/candles", params=params)
-        except httpx.RequestError as exc:
-            raise BrokerConnectionError(str(exc)) from exc
+        resp = await self._get_with_retry(f"/v3/instruments/{instrument}/candles", params=params)
         self._raise_for_status(resp)
         data = resp.json()
         result: list[Candle] = []
@@ -134,11 +162,7 @@ class OandaAdapter(BrokerAdapter):
         return result
 
     async def get_account(self) -> AccountSummary:
-        try:
-            async with await self._client(self._rest_base) as client:
-                resp = await client.get(f"/v3/accounts/{self._account_id}/summary")
-        except httpx.RequestError as exc:
-            raise BrokerConnectionError(str(exc)) from exc
+        resp = await self._get_with_retry(f"/v3/accounts/{self._account_id}/summary")
         self._raise_for_status(resp)
         acc = resp.json()["account"]
         return AccountSummary(
@@ -152,11 +176,7 @@ class OandaAdapter(BrokerAdapter):
         )
 
     async def get_positions(self) -> list[BrokerPosition]:
-        try:
-            async with await self._client(self._rest_base) as client:
-                resp = await client.get(f"/v3/accounts/{self._account_id}/openPositions")
-        except httpx.RequestError as exc:
-            raise BrokerConnectionError(str(exc)) from exc
+        resp = await self._get_with_retry(f"/v3/accounts/{self._account_id}/openPositions")
         self._raise_for_status(resp)
         positions: list[BrokerPosition] = []
         for p in resp.json().get("positions", []):

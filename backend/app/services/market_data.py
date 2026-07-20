@@ -21,6 +21,7 @@ from app.db.models.market import Instrument, MarketTick
 from app.db.models.journal import SystemEvent
 from app.db.session import AsyncSessionLocal
 from app.services.candle_builder import CandleBuilder
+from app.services.price_quality import validate_tick
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ class MarketDataService:
         self._builders: dict[tuple[str, Granularity], CandleBuilder] = {}
         self._last_tick_persist: dict[str, datetime] = {}
         self._instrument_ids: dict[str, str] = {}
+        self._last_valid_tick: dict[str, PriceQuote] = {}
 
     def _builder(self, instrument: str, granularity: Granularity) -> CandleBuilder:
         key = (instrument, granularity)
@@ -159,6 +161,19 @@ class MarketDataService:
             await session.commit()
 
     async def handle_tick(self, tick: PriceQuote) -> None:
+        previous = self._last_valid_tick.get(tick.instrument)
+        result = validate_tick(tick, previous)
+        if not result.valid:
+            logger.warning("rejected bad tick for %s: %s", tick.instrument, result.reason)
+            await self._log_event(
+                "price_quality",
+                "warning",
+                f"rejected tick for {tick.instrument}: {result.reason}",
+                {"instrument": tick.instrument, "bid": tick.bid, "ask": tick.ask, "ts": tick.ts.isoformat()},
+            )
+            return
+        self._last_valid_tick[tick.instrument] = tick
+
         await self._publish_tick(tick)
         await self._maybe_persist_tick(tick)
         for granularity in ALL_GRANULARITIES:

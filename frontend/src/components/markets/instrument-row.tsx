@@ -6,6 +6,8 @@ import { Trash2 } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { useLivePrice } from "@/hooks/useLivePrice";
+import { useLivePriceStatus } from "@/hooks/useLivePriceStatus";
+import { PriceStatusBadge } from "@/components/price-status-badge";
 import { Button } from "@/components/ui/button";
 import { cn, formatPct, formatPrice } from "@/lib/utils";
 import type { Instrument, PriceSnapshot } from "@/types/api";
@@ -32,6 +34,7 @@ export function InstrumentRow({
       : null
   );
 
+  const priceStatus = useLivePriceStatus(instrument.symbol);
   const precision = instrument.price_precision;
   const bid = live?.bid ?? snapshot?.bid;
   const ask = live?.ask ?? snapshot?.ask;
@@ -47,6 +50,9 @@ export function InstrumentRow({
           <div className="text-sm font-medium text-foreground">{instrument.display_name}</div>
           <div className="text-xs text-muted-foreground">{instrument.symbol}</div>
         </Link>
+      </td>
+      <td className="py-3 pr-4">
+        <PriceStatusBadge status={priceStatus} />
       </td>
       <td className="py-3 pr-4 tabular-nums text-foreground">{formatPrice(bid, precision)}</td>
       <td className="py-3 pr-4 tabular-nums text-foreground">{formatPrice(ask, precision)}</td>

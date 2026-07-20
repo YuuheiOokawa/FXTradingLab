@@ -5,7 +5,9 @@ import { useQuery } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
 import { useLivePrice } from "@/hooks/useLivePrice";
+import { useLivePriceStatus } from "@/hooks/useLivePriceStatus";
 import { SignalBadge } from "@/components/signal-badge";
+import { PriceStatusBadge } from "@/components/price-status-badge";
 import { cn, formatPct, formatPrice } from "@/lib/utils";
 import type { Instrument, PriceSnapshot, SignalResponse } from "@/types/api";
 
@@ -29,6 +31,7 @@ export function WatchlistTile({ instrument }: { instrument: Instrument }) {
     refetchInterval: 30000,
   });
 
+  const priceStatus = useLivePriceStatus(instrument.symbol);
   const precision = instrument.price_precision;
   const mid = live?.mid ?? snapshot?.mid;
   const bid = live?.bid ?? snapshot?.bid;
@@ -47,7 +50,10 @@ export function WatchlistTile({ instrument }: { instrument: Instrument }) {
           <div className="text-sm font-semibold text-foreground">{instrument.display_name}</div>
           <div className="text-xs text-muted-foreground">{instrument.symbol}</div>
         </div>
-        {signal && <SignalBadge label={signal.label} />}
+        <div className="flex flex-col items-end gap-1">
+          {signal && <SignalBadge label={signal.label} />}
+          <PriceStatusBadge status={priceStatus} />
+        </div>
       </div>
       <div className="mt-3 flex items-end justify-between gap-2">
         <div className="text-2xl font-semibold tabular-nums text-foreground">{formatPrice(mid, precision)}</div>

@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from app.brokers.errors import BrokerAuthError, BrokerOrderRejected
+from app.brokers.errors import BrokerAuthError, BrokerConnectionError, BrokerOrderRejected
 from app.brokers.mock import MockAdapter
 from app.brokers.oanda import OandaAdapter
 from app.brokers.schemas import Granularity, OrderRequest
@@ -128,3 +128,44 @@ async def test_oanda_get_candles_parses_response(oanda_adapter):
     assert len(candles) == 1
     assert candles[0].open == 157.0
     assert candles[0].close == 157.3
+
+
+@respx.mock
+async def test_oanda_get_current_price_retries_transient_5xx_then_succeeds(oanda_adapter):
+    """docs/15_PRODUCTION_READINESS_REVIEW.md 'OANDA Adapter production-quality
+    pass': idempotent GETs retry a transient failure instead of surfacing it
+    to the caller immediately."""
+    route = respx.get("https://api-fxpractice.oanda.com/v3/accounts/001-001-1234567-001/pricing")
+    route.side_effect = [
+        httpx.Response(503, text="service unavailable"),
+        httpx.Response(
+            200,
+            json={"prices": [{"instrument": "USD_JPY", "bids": [{"price": "157.10"}], "asks": [{"price": "157.16"}]}]},
+        ),
+    ]
+    quote = await oanda_adapter.get_current_price("USD_JPY")
+    assert quote.bid == 157.10
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_oanda_get_current_price_gives_up_after_max_attempts(oanda_adapter):
+    route = respx.get("https://api-fxpractice.oanda.com/v3/accounts/001-001-1234567-001/pricing")
+    route.mock(return_value=httpx.Response(503, text="service unavailable"))
+    with pytest.raises(BrokerConnectionError):
+        await oanda_adapter.get_current_price("USD_JPY")
+    assert route.call_count == 3  # max_attempts default
+
+
+@respx.mock
+async def test_oanda_create_order_never_retries(oanda_adapter):
+    """Order submission must NEVER auto-retry — a retry after an ambiguous
+    failure (e.g. the order actually went through but the response was lost)
+    could submit a duplicate order. Idempotency is OrderOrchestrator's job via
+    idempotency_key, not this adapter's."""
+    route = respx.post("https://api-fxpractice.oanda.com/v3/accounts/001-001-1234567-001/orders")
+    route.mock(return_value=httpx.Response(503, text="service unavailable"))
+    order = OrderRequest(instrument="USD_JPY", direction="BUY", size=1000, stop_loss=150.0, take_profit=160.0, idempotency_key="k-retry")
+    with pytest.raises(BrokerConnectionError):
+        await oanda_adapter.create_order(order)
+    assert route.call_count == 1
