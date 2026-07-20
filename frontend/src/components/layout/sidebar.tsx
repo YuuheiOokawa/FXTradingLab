@@ -19,7 +19,7 @@ import {
 
 import { cn } from "@/lib/utils";
 
-const NAV = [
+export const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/markets", label: "Markets", icon: Globe },
   { href: "/chart", label: "Chart", icon: LineChart },

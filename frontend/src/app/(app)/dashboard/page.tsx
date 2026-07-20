@@ -14,12 +14,12 @@ import { computeJournalStats } from "@/components/dashboard/metrics";
 import type { Instrument, PaperAccount, PaperPosition, SystemStatus, TradeJournalEntry } from "@/types/api";
 
 export default function DashboardPage() {
-  const { data: instruments } = useQuery<Instrument[]>({
+  const { data: instruments, isLoading: instrumentsLoading, isError: instrumentsError } = useQuery<Instrument[]>({
     queryKey: ["instruments"],
     queryFn: () => api.get("/instruments"),
   });
 
-  const { data: account } = useQuery<PaperAccount>({
+  const { data: account, isLoading: accountLoading } = useQuery<PaperAccount>({
     queryKey: ["paper-account"],
     queryFn: () => api.get("/paper/account"),
     refetchInterval: 15000,
@@ -45,6 +45,7 @@ export default function DashboardPage() {
 
   const watched = (instruments ?? []).filter((i) => i.is_watched);
   const stats = computeJournalStats(trades ?? [], account);
+  const initialLoading = instrumentsLoading && accountLoading;
 
   return (
     <div className="flex flex-col gap-6">
@@ -53,6 +54,17 @@ export default function DashboardPage() {
         <p className="text-sm text-muted-foreground">口座状況・監視銘柄・シグナル・システム稼働状態の概要</p>
       </div>
 
+      {initialLoading && (
+        <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">読み込み中...</div>
+      )}
+      {!initialLoading && instrumentsError && (
+        <div className="rounded-lg border border-sell/30 bg-sell/10 p-4 text-sm text-sell">
+          データの取得に失敗しました。しばらくしてから再読み込みしてください。
+        </div>
+      )}
+
+      {!initialLoading && (
+      <>
       <section>
         <SummaryStats account={account} positions={positions} stats={stats} />
       </section>
@@ -98,6 +110,8 @@ export default function DashboardPage() {
           <SystemPanel status={systemStatus} />
         </CardContent>
       </Card>
+      </>
+      )}
     </div>
   );
 }
