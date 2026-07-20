@@ -6,29 +6,38 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-const COOKIE_NAME = "fxlab_token";
-// Mirrors src/middleware.ts's TOKEN constant — both read the same build-time
-// env var, so a correct submission here always satisfies the middleware check.
-const EXPECTED_TOKEN = process.env.NEXT_PUBLIC_APP_API_TOKEN;
-
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
   const next = params.get("next") ?? "/dashboard";
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!EXPECTED_TOKEN || value !== EXPECTED_TOKEN) {
-      setError("トークンが正しくありません。");
-      return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      // Verified server-side (app/api/session-login/route.ts) against a
+      // server-only env var — see docs/11_SECURITY.md "Frontend login gate"
+      // for why this must not be a client-side comparison.
+      const res = await fetch("/api/session-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: value }),
+      });
+      if (!res.ok) {
+        setError("トークンが正しくありません。");
+        return;
+      }
+      router.push(next);
+      router.refresh();
+    } catch {
+      setError("ログインに失敗しました。時間をおいて再度お試しください。");
+    } finally {
+      setSubmitting(false);
     }
-    // 8 hours — this is a single-operator convenience gate, not a session
-    // system; re-entering the token periodically is an acceptable trade-off.
-    document.cookie = `${COOKIE_NAME}=${encodeURIComponent(value)}; path=/; max-age=${8 * 60 * 60}; samesite=strict`;
-    router.push(next);
-    router.refresh();
   }
 
   return (
@@ -55,7 +64,7 @@ function LoginForm() {
           className="mb-2"
         />
         {error && <p className="mb-2 text-xs text-sell">{error}</p>}
-        <Button type="submit" className="w-full">
+        <Button type="submit" className="w-full" disabled={submitting}>
           ログイン
         </Button>
       </form>

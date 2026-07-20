@@ -138,7 +138,16 @@ railway run --service api alembic upgrade head
    ```
    NEXT_PUBLIC_API_URL=https://<your-railway-api-domain>
    NEXT_PUBLIC_APP_API_TOKEN=<same token as APP_API_TOKEN above>
+   APP_API_TOKEN=<same token again, WITHOUT the NEXT_PUBLIC_ prefix>
    ```
+   Both frontend variables must be set to the **same value** as the backend's
+   `APP_API_TOKEN` — but they serve different purposes and one is NOT simply
+   redundant with the other: `NEXT_PUBLIC_APP_API_TOKEN` is what the browser
+   uses to actually call the Railway API/WebSocket, while the plain
+   `APP_API_TOKEN` (server-only, never shipped to the browser) is what
+   `middleware.ts` and `app/api/session-login/route.ts` check the login
+   cookie against. See `docs/11_SECURITY.md` "Frontend login gate" for why
+   the login check specifically must not use the `NEXT_PUBLIC_` copy.
 3. Deploy. Once live, go back to the Railway "api" service and set
    `ALLOWED_ORIGINS` to the real `https://<project>.vercel.app` domain (or
    your custom domain once attached) — the app is designed to fail closed

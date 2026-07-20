@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 logger = logging.getLogger(__name__)
 
 from app.api.deps import require_auth
+from app.api.rate_limit import rate_limit
 from app.api.routes import ai, backtest, journal, live, market, paper, replay, signals, simulate, system
 from app.brokers.factory import get_market_data_provider
 from app.core.config import get_settings
@@ -77,7 +78,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-api_v1_dependencies = [Depends(require_auth)]
+api_v1_dependencies = [Depends(require_auth), Depends(rate_limit)]
 
 app.include_router(market.router, prefix="/api/v1", dependencies=api_v1_dependencies)
 app.include_router(signals.router, prefix="/api/v1", dependencies=api_v1_dependencies)

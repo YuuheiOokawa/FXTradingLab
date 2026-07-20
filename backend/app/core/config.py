@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     # request will be blocked; this is intentionally a hard failure mode rather
     # than silently allowing "*" against a real deployment.
     allowed_origins: str = ""
+    # Per-identity (bearer token, or client IP when auth is disabled) requests-
+    # per-minute cap on /api/v1/*, enforced by app/api/rate_limit.py — see
+    # docs/11_SECURITY.md "Rate limiting". Skipped in development like auth
+    # itself. 120/min comfortably covers this app's own frontend (dashboard
+    # polling + WS reconnect bursts) while still bounding a leaked-token abuse
+    # case; raise it if your own usage pattern legitimately needs more.
+    rate_limit_per_minute: int = 120
 
     # --- Database ---
     database_url: str = "postgresql+asyncpg://fxlab:fxlab@localhost:5432/fxlab"

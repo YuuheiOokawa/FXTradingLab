@@ -48,6 +48,8 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - name: Lint (ruff)
         run: ruff check . || true # advisory in v1 — see docs/11_SECURITY.md
+      - name: Dependency vulnerability scan (pip-audit)
+        run: pip install pip-audit && pip-audit -r requirements.txt || true # advisory in v1 — see docs/11_SECURITY.md
       - name: Run migrations
         run: alembic upgrade head
       - name: Test
@@ -68,6 +70,8 @@ jobs:
       - run: npm install
       - name: Lint (eslint)
         run: npm run lint
+      - name: Dependency vulnerability scan (npm audit)
+        run: npm audit --audit-level=high || true # advisory in v1 — see docs/11_SECURITY.md
       - name: Typecheck
         run: npx tsc --noEmit
       - name: Unit tests
