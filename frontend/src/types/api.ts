@@ -241,14 +241,28 @@ export interface SimulationState {
   closed_price: number | null;
 }
 
+export type ReplayJudgment = "good" | "neutral" | "risky";
+
+export interface ReplayJudgmentCriterion {
+  criterion: string;
+  verdict: "favorable" | "unfavorable" | "neutral" | "not_specified";
+  note: string;
+}
+
 export interface ReplayDecisionRecord {
+  id: string;
   decided_at_index: number;
+  decided_at_time: string;
   action: "BUY" | "SELL" | "SKIP";
   entry_price: number | null;
+  stop_loss_pips: number | null;
+  take_profit_pips: number | null;
   exit_price: number | null;
   pnl: number | null;
   max_favorable: number;
   max_adverse: number;
+  judgment: ReplayJudgment | null;
+  judgment_criteria: ReplayJudgmentCriterion[] | null;
   explanation: SignalReason[] | null;
 }
 
@@ -257,6 +271,12 @@ export interface ReplaySessionState {
   instrument: string;
   granularity: Granularity;
   training_mode: boolean;
+  start_time: string;
+  current_time: string;
+  speed: number;
+  status: "active" | "finished";
+  initial_balance: number;
+  current_balance: number;
   current_index: number;
   total_candles: number;
   is_at_end: boolean;

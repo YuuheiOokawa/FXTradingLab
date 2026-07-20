@@ -1,8 +1,10 @@
 "use client";
 
+import { useState } from "react";
 import { Pause, Play, SkipForward } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 
 const SPEEDS = [1, 5, 10, 50];
@@ -29,11 +31,20 @@ export function ReplayControls({
   onStep: () => void;
   stepping: boolean;
   hasOpenDecision: boolean;
-  onDecide: (action: "BUY" | "SELL" | "SKIP") => void;
+  onDecide: (action: "BUY" | "SELL" | "SKIP", stopLossPips?: number, takeProfitPips?: number) => void;
   onClose: () => void;
   deciding: boolean;
   closing: boolean;
 }) {
+  const [stopLossPips, setStopLossPips] = useState<string>("");
+  const [takeProfitPips, setTakeProfitPips] = useState<string>("");
+
+  function decide(action: "BUY" | "SELL" | "SKIP") {
+    const sl = stopLossPips ? Number(stopLossPips) : undefined;
+    const tp = takeProfitPips ? Number(takeProfitPips) : undefined;
+    onDecide(action, sl, tp);
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Button variant="outline" size="sm" onClick={onStep} disabled={isAtEnd || stepping || autoplay}>
@@ -68,13 +79,41 @@ export function ReplayControls({
         </Button>
       ) : (
         <>
-          <Button variant="buy" size="sm" onClick={() => onDecide("BUY")} disabled={deciding || isAtEnd}>
+          <div className="flex items-center gap-1.5">
+            <label className="text-xs text-muted-foreground" htmlFor="replay-sl-pips">
+              SL(pips)
+            </label>
+            <Input
+              id="replay-sl-pips"
+              type="number"
+              min={0}
+              step={1}
+              className="h-8 w-16 text-xs"
+              value={stopLossPips}
+              onChange={(e) => setStopLossPips(e.target.value)}
+              placeholder="任意"
+            />
+            <label className="text-xs text-muted-foreground" htmlFor="replay-tp-pips">
+              TP(pips)
+            </label>
+            <Input
+              id="replay-tp-pips"
+              type="number"
+              min={0}
+              step={1}
+              className="h-8 w-16 text-xs"
+              value={takeProfitPips}
+              onChange={(e) => setTakeProfitPips(e.target.value)}
+              placeholder="任意"
+            />
+          </div>
+          <Button variant="buy" size="sm" onClick={() => decide("BUY")} disabled={deciding || isAtEnd}>
             BUY
           </Button>
-          <Button variant="sell" size="sm" onClick={() => onDecide("SELL")} disabled={deciding || isAtEnd}>
+          <Button variant="sell" size="sm" onClick={() => decide("SELL")} disabled={deciding || isAtEnd}>
             SELL
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => onDecide("SKIP")} disabled={deciding || isAtEnd}>
+          <Button variant="ghost" size="sm" onClick={() => decide("SKIP")} disabled={deciding || isAtEnd}>
             見送り
           </Button>
         </>

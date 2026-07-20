@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReasonList } from "@/components/signals/reason-list";
 import { cn, formatPnl } from "@/lib/utils";
-import type { ReplayDecisionRecord } from "@/types/api";
+import type { ReplayDecisionRecord, ReplayJudgment } from "@/types/api";
 
 const ACTION_LABEL: Record<ReplayDecisionRecord["action"], string> = {
   BUY: "買い",
@@ -15,6 +15,25 @@ function actionVariant(action: ReplayDecisionRecord["action"]): "buy" | "sell" |
   if (action === "SELL") return "sell";
   return "muted";
 }
+
+const JUDGMENT_LABEL: Record<ReplayJudgment, string> = {
+  good: "良い判断",
+  neutral: "普通",
+  risky: "危険な判断",
+};
+
+const JUDGMENT_VARIANT: Record<ReplayJudgment, "buy" | "muted" | "sell"> = {
+  good: "buy",
+  neutral: "muted",
+  risky: "sell",
+};
+
+const VERDICT_LABEL: Record<string, string> = {
+  favorable: "◯",
+  unfavorable: "✕",
+  neutral: "△",
+  not_specified: "―",
+};
 
 export function DecisionLog({ decisions, showExplanation }: { decisions: ReplayDecisionRecord[]; showExplanation: boolean }) {
   if (decisions.length === 0) {
@@ -32,6 +51,7 @@ export function DecisionLog({ decisions, showExplanation }: { decisions: ReplayD
             <CardHeader className="flex-row items-center justify-between py-3">
               <div className="flex items-center gap-2">
                 <Badge variant={actionVariant(d.action)}>{ACTION_LABEL[d.action]}</Badge>
+                {d.judgment && <Badge variant={JUDGMENT_VARIANT[d.judgment]}>{JUDGMENT_LABEL[d.judgment]}</Badge>}
                 <CardTitle className="text-xs text-muted-foreground">index #{d.decided_at_index}</CardTitle>
               </div>
               {d.pnl !== null && (
@@ -48,6 +68,33 @@ export function DecisionLog({ decisions, showExplanation }: { decisions: ReplayD
                   <Field label="決済" value={d.exit_price?.toFixed(3) ?? "—"} />
                   <Field label="最大含み益" value={formatPnl(d.max_favorable)} />
                   <Field label="最大含み損" value={formatPnl(d.max_adverse)} />
+                </div>
+              )}
+              {showExplanation && d.judgment_criteria && d.judgment_criteria.length > 0 && (
+                <div>
+                  <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">
+                    判断の評価（利益/損失ではなく、判断のプロセスを評価しています）
+                  </h4>
+                  <ul className="space-y-1 text-xs">
+                    {d.judgment_criteria.map((c, ci) => (
+                      <li key={ci} className="flex items-start gap-2">
+                        <span
+                          className={cn(
+                            "shrink-0 font-mono",
+                            c.verdict === "favorable" && "text-buy",
+                            c.verdict === "unfavorable" && "text-sell",
+                            c.verdict === "neutral" && "text-muted-foreground",
+                            c.verdict === "not_specified" && "text-muted-foreground"
+                          )}
+                        >
+                          {VERDICT_LABEL[c.verdict]}
+                        </span>
+                        <span>
+                          <span className="font-medium">{c.criterion}</span> — {c.note}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
               {showExplanation && d.explanation && (

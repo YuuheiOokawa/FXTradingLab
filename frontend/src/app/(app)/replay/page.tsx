@@ -40,7 +40,12 @@ export default function ReplayPage() {
   });
 
   const decideMutation = useMutation({
-    mutationFn: (action: "BUY" | "SELL" | "SKIP") => api.post<ReplaySessionState>(`/replay/sessions/${sessionId}/decide`, { action }),
+    mutationFn: ({ action, stopLossPips, takeProfitPips }: { action: "BUY" | "SELL" | "SKIP"; stopLossPips?: number; takeProfitPips?: number }) =>
+      api.post<ReplaySessionState>(`/replay/sessions/${sessionId}/decide`, {
+        action,
+        stop_loss_pips: stopLossPips ?? null,
+        take_profit_pips: takeProfitPips ?? null,
+      }),
     onSuccess: (data) => queryClient.setQueryData(["replay-session", sessionId], data),
   });
 
@@ -118,7 +123,7 @@ export default function ReplayPage() {
             onStep={() => stepMutation.mutate()}
             stepping={stepMutation.isPending}
             hasOpenDecision={session.has_open_decision}
-            onDecide={(action) => decideMutation.mutate(action)}
+            onDecide={(action, stopLossPips, takeProfitPips) => decideMutation.mutate({ action, stopLossPips, takeProfitPips })}
             onClose={() => closeMutation.mutate()}
             deciding={decideMutation.isPending}
             closing={closeMutation.isPending}
