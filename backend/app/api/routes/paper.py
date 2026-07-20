@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_broker, get_db
 from app.brokers.base import BrokerAdapter
+from app.brokers.errors import BrokerError
 from app.brokers.schemas import OrderRequest
 from app.db.models.trading import PaperPosition
 from app.services.order_orchestrator import OrderOrchestrator
@@ -106,6 +107,13 @@ async def close_position(
         position = await orchestrator.close_paper_position(session, position_id)
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except BrokerError as exc:
+        # docs/15_PRODUCTION_READINESS_REVIEW.md: a broker outage during close
+        # must surface as a clean, retryable error — not a raw 500 — and must
+        # not leave the position in a half-closed state (nothing was written
+        # to the DB yet at the point get_current_price fails, so the position
+        # stays "open" and this is safe to simply retry).
+        raise HTTPException(502, detail={"error": {"code": "BROKER_UNAVAILABLE", "message": str(exc)}}) from exc
     return {
         "id": str(position.id),
         "status": position.status,
