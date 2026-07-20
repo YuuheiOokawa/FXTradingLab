@@ -21,6 +21,7 @@ import pandas as pd
 from app.brokers.factory import get_market_data_provider
 from app.brokers.schemas import Granularity
 from app.core.config import get_settings
+from app.core.request_context import order_context
 from app.db.session import AsyncSessionLocal
 from app.services.indicators import atr
 from app.services.order_orchestrator import OrderOrchestrator
@@ -88,11 +89,20 @@ async def _evaluate_and_maybe_trade(orchestrator: OrderOrchestrator, instrument:
         idempotency_key=f"auto-{instrument}-{signal.direction}-{uuid.uuid4()}",
     )
     async with AsyncSessionLocal() as session:
-        try:
-            outcome = await orchestrator.submit_paper_order(session, order)
-            logger.info("FULL_AUTO order placed: %s %s score=%s", instrument, signal.direction, signal.score)
-        except RiskRejected as exc:
-            logger.info("FULL_AUTO order rejected by Risk Engine: %s (%s)", exc.code, exc.message)
+        with order_context(order.idempotency_key):
+            try:
+                outcome = await orchestrator.submit_paper_order(session, order)
+                logger.info(
+                    "FULL_AUTO order placed: %s %s score=%s",
+                    instrument,
+                    signal.direction,
+                    signal.score,
+                    extra={"symbol": instrument},
+                )
+            except RiskRejected as exc:
+                logger.info(
+                    "FULL_AUTO order rejected by Risk Engine: %s (%s)", exc.code, exc.message, extra={"symbol": instrument}
+                )
 
 
 async def run_auto_trader_loop() -> None:

@@ -9,6 +9,7 @@ from app.brokers.base import BrokerAdapter
 from app.brokers.errors import BrokerError
 from app.brokers.schemas import OrderRequest
 from app.core.config import Settings
+from app.core.request_context import order_context
 from app.services.order_orchestrator import LiveTradingDisabled, OrderOrchestrator
 from app.services.repo import get_or_create_risk_settings
 from app.services.risk_engine import RiskRejected
@@ -75,9 +76,12 @@ async def submit_live_order(
         take_profit=body.take_profit,
         idempotency_key=body.idempotency_key,
     )
-    try:
-        await orchestrator.submit_live_order(session, order, confirm_live=body.confirm_live)
-    except LiveTradingDisabled as exc:
-        raise HTTPException(403, detail={"error": {"code": "LIVE_TRADING_DISABLED", "missing_gates": exc.missing_gates}}) from exc
-    except RiskRejected as exc:
-        raise HTTPException(422, detail={"error": {"code": exc.code, "message": exc.message}}) from exc
+    with order_context(order.idempotency_key):
+        try:
+            await orchestrator.submit_live_order(session, order, confirm_live=body.confirm_live)
+        except LiveTradingDisabled as exc:
+            raise HTTPException(
+                403, detail={"error": {"code": "LIVE_TRADING_DISABLED", "missing_gates": exc.missing_gates}}
+            ) from exc
+        except RiskRejected as exc:
+            raise HTTPException(422, detail={"error": {"code": exc.code, "message": exc.message}}) from exc

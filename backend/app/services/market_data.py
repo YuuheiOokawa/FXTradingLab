@@ -168,7 +168,7 @@ class MarketDataService:
         previous = self._last_valid_tick.get(tick.instrument)
         result = validate_tick(tick, previous)
         if not result.valid:
-            logger.warning("rejected bad tick for %s: %s", tick.instrument, result.reason)
+            logger.warning("rejected bad tick for %s: %s", tick.instrument, result.reason, extra={"symbol": tick.instrument})
             await self._log_event(
                 "price_quality",
                 "warning",

@@ -67,6 +67,7 @@ class JSONFormatter(logging.Formatter):
             "service": get_settings().service_name,
             "event": record.name,
             "message": record.getMessage(),
+            "symbol": getattr(record, "symbol", None),
             "request_id": getattr(record, "request_id", None),
             "order_id": getattr(record, "order_id", None),
         }
