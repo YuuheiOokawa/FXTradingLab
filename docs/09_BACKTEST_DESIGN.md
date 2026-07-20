@@ -31,14 +31,25 @@ For each closed candle in order:
 
 ## In-sample / out-of-sample
 
-`date_from..date_to` is split at `in_sample_ratio` into IS/OOS sub-ranges *before* the
-loop runs; the engine runs both sub-ranges independently and returns two
-`BacktestResult` summaries plus the combined equity curve, so a user can compare
-IS vs OOS performance side by side rather than only seeing a single blended number
-that hides overfitting. Walk-Forward Analysis is not implemented in v1; the engine's
-`run_range()` primitive (single-range in/out) is the building block a future
-`WalkForwardRunner` would call repeatedly over rolling windows — documented as the
-extension point rather than built now.
+The requested candle series (fetched by row count, not an explicit date range — see
+`POST /backtests`'s `candle_count` param) is split by index at `in_sample_ratio`
+into IS/OOS sub-ranges. `BacktestEngine.run()` walks the full series once, labels
+each bar's segment as it goes (`i < split_index` → in-sample, else out-of-sample),
+and `compute_metrics()` is called separately for each segment plus the combined
+total — so `POST /backtests` returns `summary.overall` / `summary.in_sample` /
+`summary.out_of_sample` from a single pass, letting the user compare IS vs OOS
+performance side by side rather than only seeing a single blended number that
+hides overfitting.
+
+**Corrected during `docs/15_PRODUCTION_READINESS_REVIEW.md`**: this doc previously
+claimed a `run_range()` primitive existed as a Walk-Forward Analysis building
+block — it does not; `run()` only ever does a single IS/OOS split over the whole
+series handed to it, with no notion of rolling windows. Walk-Forward Analysis
+(docs/14_IMPLEMENTATION_PLAN.md) remains genuinely unimplemented, not merely
+"missing its outer loop" — building it would mean adding a `WalkForwardRunner` that
+calls `BacktestEngine.run()` repeatedly over successive rolling slices of the
+candle series (each call already gets its own IS/OOS split for free), not calling
+a primitive that doesn't exist yet.
 
 ## Metrics computed
 

@@ -4,6 +4,14 @@ Phases as specified in the project brief, with honest status. This file is the
 source of truth for "what actually works today" vs "designed but not yet built" —
 keep it updated as work lands.
 
+> A dedicated production-readiness review (`docs/15_PRODUCTION_READINESS_REVIEW.md`)
+> re-checked every claim in this file against the actual code, found and fixed
+> several real gaps (a look-ahead bias bug in the backtest engine, missing
+> WebSocket auth, a frontend WebSocket subscription race, and others), and
+> re-verified the GMO Coin broker research (`docs/16_BROKER_SELECTION_REVIEW.md`).
+> Read that review for the full list of what was actually found and fixed,
+> not just claimed.
+
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Project init, DB schema, base UI shell, BrokerAdapter abstraction | ✅ Implemented |
