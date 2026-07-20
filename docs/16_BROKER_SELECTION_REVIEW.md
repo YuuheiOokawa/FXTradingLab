@@ -48,6 +48,33 @@ a real `GmoCoinAdapter` implementation, a human must open
 auth header names, and payload shapes — do not implement from this document
 alone.
 
+**Re-verified in a later pass** (explicitly re-requested — "GMOコインが本当に
+外国為替FX APIとして利用可能か再検証してください"): direct fetch of
+`api.coin.z.com/fxdocs/` still gets blocked by anti-bot protection, same as
+before — nothing has changed there. However, search-indexed content
+(Google's cache of the docs page, since search engines are allowlisted where
+direct fetches aren't) surfaced meaningfully more structural detail than the
+first pass had, all consistent with — and strengthening — the original
+conclusion, not contradicting it:
+- **Public API** (no auth): latest rate retrieval + **Kline (candle/OHLC)
+  data** — confirms candle-equivalent data is available, not just a raw
+  ticker.
+- **Private API** (API key auth): asset balance, **orders (new / settlement /
+  change / cancel)**, execution info, order info, **open position lists**.
+- **WebSocket**: both Public (rates) and Private (execution/order/position
+  notifications) channels exist.
+- English docs mirror exists at `api.coin.z.com/fxdocs/en/` (also
+  anti-bot-blocked for direct fetch, same as the Japanese version).
+- A 30-day free API trial and official sample code in 10 languages
+  (including Python) are offered — lowers the bar for the eventual real
+  implementation.
+
+This does not change the recommendation or any conclusion above — it's
+additional corroboration from the same underlying source, gathered a
+different way since the direct-fetch block persists. The human-must-verify-
+in-a-real-browser caveat above still stands before writing real order-path
+code.
+
 ## Why not GMO Click Securities (GMOクリック証券)?
 
 A different company in the same GMO Financial Holdings group runs the FXネオ
