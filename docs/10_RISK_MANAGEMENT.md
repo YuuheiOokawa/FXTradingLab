@@ -75,6 +75,35 @@ notification, so the user always knows *why* an order didn't go through.
 which condition(s) failed if any is missing. This mirrors the requirement that
 `production` deployment must never itself imply a live account.
 
+### Recommended rollout sequence before ever setting condition 1 to true
+
+None of this is enforced by the app beyond the three gates above — it's the
+sequence an operator should actually follow, in order, before deliberately
+flipping `LIVE_TRADING_ENABLED=true` anywhere:
+
+1. **Deploy** (`docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md`) — staging first,
+   production once staging looks right.
+2. **Paper Trading, watched over real time** — let the app run against real
+   market data (`BROKER_PROVIDER=oanda`/`gmo_coin` for market data,
+   `market_data_provider` split if needed) with Paper Trading for at least
+   several trading days. Confirm signals, fills, slippage modeling, and the
+   journal all look sane against real price action, not just the mock
+   simulator's synthetic data.
+3. **A funded practice/demo broker account** (`BROKER_ENVIRONMENT=practice`)
+   — confirms the actual broker adapter's auth, order submission, and
+   position/account sync work end-to-end against the real broker API, still
+   with zero real-money risk.
+4. **A long-running soak** (`docs/15_PRODUCTION_READINESS_REVIEW.md` "Long-
+   running / chaos testing") — the app staying healthy through realistic
+   uptime (days, not minutes) and through at least one of each failure mode
+   it's supposed to survive (worker restart, Redis blip, broker
+   disconnect) before trusting it with real orders.
+5. **Only then**, a deliberate, explicit operator action — condition 1
+   (env var) is a deploy-time change requiring a redeploy, condition 2 is a
+   UI action requiring a typed confirmation phrase, condition 3 is per-order
+   — there is no single switch, by design, and skipping straight to it
+   without 1-4 above defeats the entire point of the gates existing.
+
 ## FULL_AUTO pipeline order (fixed, not configurable)
 
 ```

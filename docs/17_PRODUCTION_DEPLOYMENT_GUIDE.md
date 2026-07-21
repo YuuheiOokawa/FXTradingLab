@@ -195,11 +195,14 @@ Preview build fails closed (the BFF proxy returns 502s, per `route.ts`'s
 Once you've done steps 1-3 above manually the first time (so the Railway
 services and Vercel project exist), you can re-deploy either side later via
 the Actions tab → "Deploy (manual)" → "Run workflow" instead of the CLI
-commands above. Requires four repo secrets first: `RAILWAY_TOKEN`,
-`VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` — see the comment at the
-top of that workflow file for where to get each one. Consider adding required
-reviewers to the `production` GitHub Environment (Settings → Environments) for
-a second confirmation step before any deploy runs.
+commands above — it now asks for **both** which environment (`staging` or
+`production`, no default — see "6. Staging environment" below) and what to
+deploy. Requires four repo secrets per GitHub Environment first:
+`RAILWAY_TOKEN`, `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` — see
+the comment at the top of that workflow file for where to get each one.
+Consider adding required reviewers to the `production` GitHub Environment
+(Settings → Environments) for a second confirmation step before any
+production deploy runs.
 
 ## 4. Verify the deployment
 
@@ -228,6 +231,100 @@ Redeploy both services (env var changes require a restart). LIVE trading
 stays gated regardless — see `docs/10_RISK_MANAGEMENT.md`; do not set
 `LIVE_TRADING_ENABLED=true` until you've deliberately decided to and
 understand every one of the three required gates.
+
+## 6. Staging environment
+
+Recommended before ever pointing production at a real broker account (even
+practice/OANDA), and definitely before `LIVE_TRADING_ENABLED=true` is ever
+considered: a staging deployment that exercises the exact same code path
+against real market data, fully isolated from production's database, Redis,
+secrets, and domain. `app/main.py`'s boot guard refuses to even start if
+`APP_ENV=staging` and `LIVE_TRADING_ENABLED=true` are both set — staging
+exists specifically to validate with Paper/Practice trading, never a real
+order — so this is enforced at the process level, not just by convention.
+
+### Railway: a second Environment, not a second project
+
+Railway's own "Environments" feature (distinct from this app's `APP_ENV`
+setting, though they should match) is the right fit here — same project,
+same services, a separate variable set and, critically, **separate database
+instances that are never copied from production**:
+
+1. Railway dashboard → your project → **Environments** → **New Environment**
+   → name it `staging`, "Fork from Production" (this copies the *service
+   structure* — api, worker — not any data).
+2. Add a **new** Postgres and Redis service to the `staging` environment
+   specifically (New → Database, same as step 1 of the production
+   walkthrough above, but while the `staging` environment is selected in the
+   environment switcher) — do not point staging at production's Postgres/
+   Redis instances under any circumstances.
+3. Set the `staging` environment's variables (Variables tab, with `staging`
+   selected):
+   ```
+   APP_ENV=staging
+   APP_API_TOKEN=<a DIFFERENT generated secret from production's>
+   ALLOWED_ORIGINS=https://<your-staging-vercel-domain>
+   DATABASE_URL=<staging Postgres, from step 2 above, +asyncpg>
+   REDIS_URL=<staging Redis, from step 2 above>
+   BROKER_PROVIDER=mock              # or oanda with OANDA_ENVIRONMENT=practice
+   LIVE_TRADING_ENABLED=false        # the app refuses to boot in staging otherwise
+   ```
+4. Deploy with `railway up --service api --environment staging --detach`
+   (and the same for `worker`), or via the GitHub Actions workflow below.
+5. Run the initial migration against staging specifically:
+   `railway run --service api --environment staging alembic upgrade head`.
+
+### Vercel: a separate project, not a Preview deployment
+
+Don't rely on Vercel's automatic PR Preview deployments as "staging" — a
+Preview deployment's environment variables are easy to accidentally leave
+pointed at production (see "Locking down Preview deployments" above), and a
+Preview URL is meant to be short-lived/per-PR, not a stable environment you
+return to regularly. Instead:
+
+1. Import the same GitHub repo into Vercel a **second time** as a new
+   project (e.g. `fxlab-staging`), Root Directory `frontend`, same as the
+   production import in step 3 above.
+2. Set this project's **Production** environment variables (Vercel's own
+   per-project environment concept — this is that project's live/main
+   deployment, which is what you'll actually visit as "staging"):
+   ```
+   NEXT_PUBLIC_WS_URL=wss://<your-staging-railway-api-domain>
+   BACKEND_INTERNAL_URL=https://<your-staging-railway-api-domain>
+   BACKEND_API_TOKEN=<same value as staging's APP_API_TOKEN above>
+   APP_API_TOKEN=<the staging /login password — can equal BACKEND_API_TOKEN>
+   SESSION_SECRET=<yet another distinct generated secret>
+   ```
+   None of these should be shared with the production Vercel project — a
+   fully separate project means a fully separate variable set by
+   construction, which is the whole point.
+3. Deploy. Go back to the staging Railway `api` service and confirm
+   `ALLOWED_ORIGINS` matches this new project's actual domain exactly.
+
+### Deploying staging via GitHub Actions
+
+`.github/workflows/deploy.yml` takes an `environment: [staging, production]`
+input alongside the existing `target` input — select `staging` explicitly
+every time (there is no default, by design, so a misclick can't land on
+production). One-time setup: create a `staging` GitHub Environment
+(Settings → Environments) with its own `RAILWAY_TOKEN`, `VERCEL_TOKEN`,
+`VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` secrets (same names as `production`'s,
+different values — `VERCEL_PROJECT_ID` in particular MUST point at the
+separate staging Vercel project from above).
+
+### What must differ between staging and production (checklist)
+
+| | Staging | Production |
+|---|---|---|
+| Railway environment | `staging` (forked, separate DB/Redis) | `production` |
+| Vercel project | separate project | separate project |
+| `APP_API_TOKEN` (backend) | distinct value | distinct value |
+| `SESSION_SECRET` (frontend) | distinct value | distinct value |
+| `ALLOWED_ORIGINS` | staging Vercel domain only | production Vercel domain only |
+| `DATABASE_URL` / `REDIS_URL` | staging instances, never copied from prod | production instances |
+| `BROKER_PROVIDER` | `mock` or `oanda` w/ `OANDA_ENVIRONMENT=practice` | whatever you've deliberately configured |
+| `LIVE_TRADING_ENABLED` | always `false` (enforced by a boot guard) | `false` until you deliberately change it |
+| Session cookie | issued by, and only valid against, the staging frontend's own `SESSION_SECRET` — logging into staging never grants access to production or vice versa | — |
 
 ## Database backup / restore / retention
 

@@ -1,25 +1,43 @@
-# Manual-trigger production deploy — prepared, NOT wired to run automatically.
+# Manual-trigger deploy — prepared, NOT wired to run automatically.
 #
 # This workflow only fires when a human clicks "Run workflow" in the Actions
-# tab (workflow_dispatch). It never runs on push/PR/merge to main — that is
-# deliberate: per docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md, a production deploy
-# of a trading app should always be an explicit, deliberate operator action,
-# never an automatic side effect of merging code.
+# tab (workflow_dispatch). It never runs on push/PR/merge — that is
+# deliberate: per docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md, deploying a trading
+# app (even to staging) should always be an explicit, deliberate operator
+# action, never an automatic side effect of merging code.
 #
-# One-time setup before this can be used (see docs/17 for the full walkthrough):
-#   1. Create the `production` GitHub Environment (Settings → Environments) and
-#      optionally add required reviewers there for a second confirmation step.
-#   2. Add repo secrets: RAILWAY_TOKEN (railway.com → Account Settings → Tokens),
-#      VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID (vercel.com → Account
-#      Settings → Tokens, and `vercel link` locally once to get the IDs).
-#   3. CI (ci.yml) must already be green on the commit/branch you deploy — this
-#      workflow does not re-run tests itself.
+# Deploys to EITHER staging or production, chosen explicitly on every run —
+# there is no default, so a run can't accidentally land on production by
+# someone not reading the dropdown (docs/15_PRODUCTION_READINESS_REVIEW.md
+# "Staging environment separation").
+#
+# One-time setup before this can be used (see docs/17 "Staging environment"
+# for the full walkthrough):
+#   1. Create BOTH the `staging` and `production` GitHub Environments
+#      (Settings → Environments). Add required reviewers to `production`
+#      (and optionally `staging`) for a second confirmation step.
+#   2. Add the SAME FOUR secret names to each environment, with DIFFERENT
+#      values: RAILWAY_TOKEN, VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID.
+#      - RAILWAY_TOKEN can be the same project-scoped token for both if
+#        staging is a Railway Environment inside the same project (the
+#        `--environment` flag below picks which one); use a different
+#        token if staging lives in an entirely separate Railway project.
+#      - VERCEL_PROJECT_ID (and ORG_ID if different) MUST differ between
+#        the two — staging and production are separate Vercel projects
+#        with separate domains (docs/17).
+#   3. CI (ci.yml) must already be green on the commit/branch you deploy —
+#      this workflow does not re-run tests itself.
 
 name: Deploy (manual)
 
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Which environment to deploy to"
+        required: true
+        type: choice
+        options: [staging, production]
       target:
         description: "What to deploy"
         required: true
@@ -31,38 +49,43 @@ jobs:
   deploy-backend:
     if: ${{ inputs.target == 'backend' || inputs.target == 'both' }}
     runs-on: ubuntu-latest
-    environment: production
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Railway CLI
         run: npm install -g @railway/cli
       - name: Deploy api service
         working-directory: backend
-        run: railway up --service api --detach
+        run: railway up --service api --environment "${{ inputs.environment }}" --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       - name: Deploy worker service
         working-directory: backend
-        run: railway up --service worker --detach
+        run: railway up --service worker --environment "${{ inputs.environment }}" --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       - name: Run migrations
         working-directory: backend
-        run: railway run --service api alembic upgrade head
+        run: railway run --service api --environment "${{ inputs.environment }}" alembic upgrade head
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
   deploy-frontend:
     if: ${{ inputs.target == 'frontend' || inputs.target == 'both' }}
     runs-on: ubuntu-latest
-    environment: production
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Vercel CLI
         run: npm install -g vercel
-      - name: Deploy to Vercel (production)
+      - name: Deploy to Vercel
         working-directory: frontend
         run: |
+          # "--environment=production" here is Vercel's own per-PROJECT
+          # environment concept (production/preview/development), NOT this
+          # workflow's staging-vs-production choice — staging deploys to
+          # ITS OWN Vercel project's "production" (i.e. main/live) slot,
+          # which VERCEL_PROJECT_ID above already scopes to the right project.
           vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
           vercel build --prod --token="$VERCEL_TOKEN"
           vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
