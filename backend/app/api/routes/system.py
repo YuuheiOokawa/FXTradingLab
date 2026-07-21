@@ -17,8 +17,22 @@ from app.services.order_orchestrator import OrderOrchestrator
 from app.services.repo import get_or_create_risk_settings
 from app.worker.jobs.heartbeat import HEARTBEAT_KEY
 from app.ws import registry as ws_registry
+from app.ws.tickets import TICKET_TTL_SECONDS, mint_ticket
 
 router = APIRouter(tags=["system"])
+
+
+@router.post("/system/ws-ticket")
+async def issue_ws_ticket() -> dict:
+    """Mints a short-lived, single-use ticket for the WS handshake
+    (docs/11_SECURITY.md "BFF migration"). Gated by the same `require_auth`
+    bearer check every other /api/v1/* route has — in production that bearer
+    token is held only by the frontend's server-side BFF, never the browser,
+    so only the BFF (acting on behalf of an already-session-authenticated
+    user) can ever obtain a ticket. The browser receives just the ticket,
+    which is safe to hand over precisely because it's worthless within
+    seconds and after one use."""
+    return {"ticket": await mint_ticket(), "expires_in": TICKET_TTL_SECONDS}
 
 _process_start = time.monotonic()
 

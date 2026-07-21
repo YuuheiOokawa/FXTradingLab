@@ -29,10 +29,18 @@ _start_time = time.monotonic()
 async def lifespan(app: FastAPI):
     setup_logging()
     settings = get_settings()
-    if settings.app_env == "production" and not settings.app_api_token:
+    if settings.app_env != "development" and not settings.app_api_token:
         raise RuntimeError(
-            "APP_API_TOKEN must be set when APP_ENV=production (docs/11_SECURITY.md) — "
+            f"APP_API_TOKEN must be set when APP_ENV={settings.app_env} (docs/11_SECURITY.md) — "
             "refusing to boot with auth silently disabled."
+        )
+    if settings.app_env == "staging" and settings.live_trading_enabled:
+        raise RuntimeError(
+            "LIVE_TRADING_ENABLED must never be true in a staging environment "
+            "(docs/15_PRODUCTION_READINESS_REVIEW.md \"Staging environment\") — "
+            "staging exists to test against real market data with Paper/Practice "
+            "trading only. Refusing to boot rather than risk a real order from an "
+            "environment that isn't meant to place any."
         )
     if settings.app_env != "development" and not settings.allowed_origins_list:
         logger.warning(
