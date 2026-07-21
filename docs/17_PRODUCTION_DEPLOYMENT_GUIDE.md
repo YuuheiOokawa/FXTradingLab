@@ -112,12 +112,35 @@ to `backend`:
    Command): `python -m app.worker.main` — this is the one step Railway
    doesn't support declaring twice from a single `railway.toml`
    (`backend/railway.toml` documents this at the top of the file).
-3. Same environment variables as the "api" service (copy them over, or use
+3. **Check the Config-as-Code file path for this service** (Settings →
+   Config-as-Code). Since both services share the same `backend` root
+   directory, this service may auto-discover `backend/railway.toml` the
+   same way the "api" service intentionally does — and that file's
+   `[deploy]` block (`startCommand`, `healthcheckPath`) is documented by
+   Railway to take precedence over dashboard settings when a config file
+   applies. Unverified from this sandbox exactly how Railway resolves this
+   for a second same-root-directory service specifically (Railway's own
+   docs were unreachable to confirm precisely during this review) — **treat
+   step 5's log check below as the actual verification**, not this
+   paragraph's reasoning. If the worker's logs show `uvicorn` output
+   instead of `worker starting: ...`, the file-based Start Command won.
+   Fix by clearing/disabling this service's Config-as-Code file path so it
+   falls back to the dashboard-only Start Command from step 2.
+4. Same environment variables as the "api" service (copy them over, or use
    Railway's shared/project-level variables so both services stay in sync).
-4. No healthcheck path applies (it's not an HTTP service) — use Railway's
-   process-restart-on-crash default instead.
-5. Deploy. Check the worker's logs for `worker starting: market_data_provider=...`
-   and confirm no repeated `BrokerConnectionError` lines.
+5. No healthcheck path applies (it's not an HTTP service) — use Railway's
+   process-restart-on-crash default instead. If step 3's concern turns out
+   to apply, this service could otherwise inherit the api service's
+   `healthcheckPath = "/health"`, which the worker can never satisfy (it
+   serves no HTTP endpoint at all) — Railway would then likely mark every
+   worker deployment unhealthy. This is exactly what to look for if the
+   worker service shows deployments failing/restarting in a loop despite
+   the process itself logging cleanly.
+6. Deploy. **Check the worker's logs for `worker starting:
+   market_data_provider=...`** (not `Uvicorn running on...`) and confirm no
+   repeated `BrokerConnectionError` lines — this log line is the actual
+   proof the Start Command override took effect, independent of whichever
+   way step 3 resolves.
 
 ### Run the initial migration
 
