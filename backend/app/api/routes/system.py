@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,8 +11,9 @@ from app.api.deps import get_broker, get_db, get_live_trading_broker
 from app.brokers.base import BrokerAdapter
 from app.core.config import get_settings
 from app.core.redis_client import get_redis
-from app.db.models.journal import Notification, SystemEvent
+from app.db.models.journal import AuditLog, Notification, SystemEvent
 from app.db.models.strategy import Signal
+from app.services.audit import write_audit_log
 from app.services.order_orchestrator import OrderOrchestrator
 from app.services.repo import get_or_create_risk_settings
 from app.worker.jobs.heartbeat import HEARTBEAT_KEY
@@ -159,8 +160,22 @@ async def get_risk_settings(session: AsyncSession = Depends(get_db)) -> dict:
 @router.put("/settings/risk")
 async def update_risk_settings(body: RiskSettingsIn, session: AsyncSession = Depends(get_db)) -> dict:
     rs = await get_or_create_risk_settings(session)
-    for field, value in body.model_dump(exclude_unset=True).items():
+    changes = body.model_dump(exclude_unset=True)
+    before = {field: getattr(rs, field) for field in changes}
+    for field, value in changes.items():
         setattr(rs, field, value)
+
+    if changes:
+        after = {field: changes[field] for field in changes}
+        await write_audit_log(session, "risk_setting_change", before=before, after=after)
+        # live_trading_admin_enabled is itself gate 2 of 3 for real-money
+        # orders (docs/10_RISK_MANAGEMENT.md) — worth its own distinctly
+        # named audit action on top of the generic risk_setting_change
+        # above, not instead of it.
+        if "live_trading_admin_enabled" in changes and before["live_trading_admin_enabled"] != after["live_trading_admin_enabled"]:
+            action = "live_trading_admin_enable" if after["live_trading_admin_enabled"] else "live_trading_admin_disable"
+            await write_audit_log(session, action)
+
     await session.commit()
     await session.refresh(rs)
     return _serialize_risk_settings(rs)
@@ -209,3 +224,46 @@ async def mark_notification_read(notification_id: str, session: AsyncSession = D
     notification.is_read = True
     await session.commit()
     return {"ok": True}
+
+
+class SessionEventIn(BaseModel):
+    action: str  # "login" | "logout" — see app.services.audit.ACTIONS
+
+
+@router.post("/system/session-event")
+async def record_session_event(body: SessionEventIn, session: AsyncSession = Depends(get_db)) -> dict:
+    """Records a login/logout audit entry on behalf of the frontend's BFF
+    (docs/11_SECURITY.md "BFF migration") — the backend has no visibility
+    into the frontend's own session-cookie lifecycle otherwise, since that
+    entirely lives in Next.js's middleware/route handlers, never touching
+    this API. Called by app/api/session-login and app/api/session-logout
+    (frontend) using the same server-only bearer token every other BFF call
+    uses — never reachable by the browser directly."""
+    if body.action not in ("login", "logout"):
+        raise HTTPException(422, f"unsupported session event action: {body.action!r}")
+    await write_audit_log(session, body.action)
+    await session.commit()
+    return {"ok": True}
+
+
+@router.get("/audit-log")
+async def list_audit_log(limit: int = 100, session: AsyncSession = Depends(get_db)) -> list[dict]:
+    """docs/15_PRODUCTION_READINESS_REVIEW.md "Audit Log" — who/when/what
+    for the named sensitive actions (login/logout, kill switch, risk
+    setting changes, LIVE trading enablement, LIVE order lifecycle).
+    Distinct from /notifications (user-facing alerts) and SystemEvent
+    (free-form operational logging, not exposed via its own endpoint)."""
+    result = await session.execute(select(AuditLog).order_by(AuditLog.ts.desc()).limit(min(limit, 500)))
+    return [
+        {
+            "id": str(a.id),
+            "ts": a.ts.isoformat(),
+            "actor": a.actor,
+            "action": a.action,
+            "before": a.before,
+            "after": a.after,
+            "context": a.context,
+            "request_id": a.request_id,
+        }
+        for a in result.scalars().all()
+    ]

@@ -32,6 +32,7 @@ TABLES_TO_TRUNCATE = [
     "risk_settings",
     "system_events",
     "notifications",
+    "audit_logs",
     "strategy_configs",
     "strategies",
     "instruments",

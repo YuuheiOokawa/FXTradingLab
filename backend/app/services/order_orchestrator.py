@@ -22,6 +22,7 @@ from app.core.config import Settings, get_settings
 from app.db.models.journal import SystemEvent, TradeJournal
 from app.db.models.market import Instrument
 from app.db.models.trading import LiveOrder, LivePosition, PaperAccount, PaperOrder, PaperPosition
+from app.services.audit import write_audit_log
 from app.services.repo import get_instrument_by_symbol, get_or_create_paper_account, get_or_create_risk_settings
 from app.services.risk_engine import RiskContext, RiskEngine, RiskRejected
 
@@ -508,6 +509,7 @@ class OrderOrchestrator:
             f"{'would approve' if result.approved else f'would reject ({result.code})'}",
             preview,
         )
+        await write_audit_log(session, "live_order_preview", context=preview)
         await session.commit()
         return preview
 
@@ -527,6 +529,18 @@ class OrderOrchestrator:
         risk_settings = await get_or_create_risk_settings(session)
         missing_gates = self.check_live_gates(risk_settings.live_trading_admin_enabled, confirm_live)
         if missing_gates:
+            await write_audit_log(
+                session,
+                "live_order_reject",
+                context={
+                    "instrument": order.instrument,
+                    "direction": order.direction,
+                    "size": order.size,
+                    "reason": "LIVE_TRADING_DISABLED",
+                    "missing_gates": missing_gates,
+                },
+            )
+            await session.commit()
             raise LiveTradingDisabled(missing_gates)
 
         # Real implementation would mirror submit_paper_order's RiskContext assembly
@@ -545,9 +559,17 @@ class OrderOrchestrator:
     async def activate_kill_switch(self, session: AsyncSession, flatten_positions: bool) -> dict:
         risk_settings = await get_or_create_risk_settings(session)
         risk_settings.kill_switch_active = True
-        await session.commit()
         await _log_event(session, "kill_switch", "warning", "Kill switch activated", {"flatten_positions": flatten_positions})
         await _notify(session, "kill_switch", "Kill Switchが作動しました", "新規注文と自動売買を停止しました。")
+        await write_audit_log(
+            session, "kill_switch_on", before={"kill_switch_active": False}, after={"kill_switch_active": True},
+            context={"flatten_positions": flatten_positions},
+        )
+        # Commit here (not just at the end) so activation is durable even if
+        # a subsequent flatten attempt below fails partway through — a
+        # kill-switch activation must never be lost because flattening had
+        # trouble, since flattening is explicitly best-effort per-position.
+        await session.commit()
 
         flattened: list[str] = []
         if flatten_positions:
@@ -564,6 +586,9 @@ class OrderOrchestrator:
     async def deactivate_kill_switch(self, session: AsyncSession) -> dict:
         risk_settings = await get_or_create_risk_settings(session)
         risk_settings.kill_switch_active = False
-        await session.commit()
         await _log_event(session, "kill_switch", "info", "Kill switch deactivated")
+        await write_audit_log(
+            session, "kill_switch_off", before={"kill_switch_active": True}, after={"kill_switch_active": False}
+        )
+        await session.commit()
         return {"kill_switch_active": False}

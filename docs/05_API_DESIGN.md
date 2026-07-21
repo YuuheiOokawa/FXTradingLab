@@ -95,8 +95,31 @@ disabled in local dev for convenience.
   update timestamp, last signal generated (timestamp + score), plus
   market-data/trading provider split warning, kill switch state, current
   mode, API process uptime, most recent error.
-- `GET /settings/risk` / `PUT /settings/risk`
+- `GET /settings/risk` / `PUT /settings/risk` — the latter writes an
+  `audit_logs` entry (`risk_setting_change`, with a before/after diff) for
+  every call that actually changes a field; a `live_trading_admin_enabled`
+  transition additionally gets its own `live_trading_admin_enable`/
+  `_disable` entry. See "Audit log" below.
 - `GET /notifications`, `POST /notifications/{id}/read`
+- `POST /system/session-event` — records a `login`/`logout` audit entry on
+  behalf of the frontend's BFF (the backend has no other visibility into
+  the frontend's own session-cookie lifecycle). Called by
+  `frontend/src/app/api/session-login` and `session-logout`, never
+  reachable by the browser directly.
+- `GET /audit-log?limit=` — see "Audit log" below.
+
+### Audit log (docs/15_PRODUCTION_READINESS_REVIEW.md "Audit Log")
+
+Deliberately separate from `SystemEvent` (free-form operational logging —
+broker hiccups, price-quality rejections, no dedicated endpoint) and from
+`/notifications` (user-facing alerts): the `audit_logs` table exists only
+for a reliable who/when/what/before-after trail on named sensitive actions
+— `login`, `logout`, `kill_switch_on`, `kill_switch_off`,
+`risk_setting_change`, `live_trading_admin_enable`/`_disable`,
+`live_order_preview`, `live_order_reject` (submit is currently
+unreachable — see `submit_live_order`'s stub, `docs/10_RISK_MANAGEMENT.md`).
+Written server-side only via `app/services/audit.write_audit_log()`; never
+holds a secret/token value in any of its three JSON columns.
 
 ### Health / readiness / metrics (top-level, NOT under `/api/v1`, unauthenticated —
 these are meant to be hit by an uptime monitor/load balancer/orchestrator, not a

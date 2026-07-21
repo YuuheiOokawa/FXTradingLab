@@ -39,5 +39,26 @@ export async function POST(request: NextRequest) {
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
   });
+
+  // Audit trail (docs/15_PRODUCTION_READINESS_REVIEW.md "Audit Log") —
+  // awaited (unlike a true fire-and-forget) so it reliably completes on a
+  // serverless runtime that may suspend background work after the response
+  // is sent, but wrapped in try/catch so a backend hiccup here degrades to
+  // "no audit entry", never "operator locked out of their own app".
+  const backendUrl = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:8000";
+  const backendToken = process.env.BACKEND_API_TOKEN;
+  try {
+    await fetch(`${backendUrl}/api/v1/system/session-event`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(backendToken ? { Authorization: `Bearer ${backendToken}` } : {}),
+      },
+      body: JSON.stringify({ action: "login" }),
+    });
+  } catch {
+    // best-effort — see comment above
+  }
+
   return response;
 }

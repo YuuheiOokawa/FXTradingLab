@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { AuditLogList } from "@/components/system/audit-log-list";
 import { KillSwitch } from "@/components/system/kill-switch";
 import { StatusOverview } from "@/components/system/status-overview";
 import { NotificationsList } from "@/components/system/notifications-list";
@@ -39,14 +40,24 @@ export default function SystemPage() {
             </Card>
           </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>通知</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <NotificationsList />
-            </CardContent>
-          </Card>
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>通知</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <NotificationsList />
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>監査ログ</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <AuditLogList />
+              </CardContent>
+            </Card>
+          </div>
         </div>
       )}
     </div>

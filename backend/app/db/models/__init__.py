@@ -1,5 +1,5 @@
 from app.db.models.identity import BrokerAccount, User
-from app.db.models.journal import Notification, RiskSettings, SystemEvent, TradeJournal
+from app.db.models.journal import AuditLog, Notification, RiskSettings, SystemEvent, TradeJournal
 from app.db.models.market import Candle, Instrument, MarketTick
 from app.db.models.replay import ReplaySession, ReplayTrade
 from app.db.models.strategy import Signal, Strategy, StrategyConfig
@@ -33,6 +33,7 @@ __all__ = [
     "RiskSettings",
     "SystemEvent",
     "Notification",
+    "AuditLog",
     "ReplaySession",
     "ReplayTrade",
 ]

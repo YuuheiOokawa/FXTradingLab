@@ -309,3 +309,14 @@ export interface NotificationItem {
   body: string;
   is_read: boolean;
 }
+
+export interface AuditLogEntry {
+  id: string;
+  ts: string;
+  actor: string;
+  action: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  context: Record<string, unknown>;
+  request_id: string | null;
+}

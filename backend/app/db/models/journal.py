@@ -75,3 +75,32 @@ class Notification(Base):
     title: Mapped[str] = mapped_column(String(200))
     body: Mapped[str] = mapped_column(String(1000), default="")
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AuditLog(Base):
+    """Deliberately separate from SystemEvent (docs/15_PRODUCTION_READINESS_
+    REVIEW.md "Audit Log"): SystemEvent is free-form operational logging
+    (broker hiccups, price-quality rejections); this table is only for the
+    specific named sensitive actions an operator or reviewer would want a
+    reliable "who/when/what/before/after" trail for — login/logout, kill
+    switch, risk-setting changes, LIVE trading enablement, and every LIVE
+    order lifecycle step (preview/submit/reject/result). `before`/`after`
+    hold field-level diffs where applicable (e.g. a risk setting change);
+    `context` holds action-specific detail. Never store a secret/token
+    value in any of these three JSON columns — see `write_audit_log()`."""
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Always "operator" today (single-operator app, docs/01_REQUIREMENTS.md) —
+    # the column exists so a future multi-user build doesn't need a migration.
+    actor: Mapped[str] = mapped_column(String(50), default="operator")
+    action: Mapped[str] = mapped_column(String(50))
+    # login|logout|kill_switch_on|kill_switch_off|risk_setting_change|
+    # live_trading_admin_enable|live_trading_admin_disable|live_order_preview|
+    # live_order_submit|live_order_reject|live_order_result
+    before: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    after: Mapped[dict | None] = mapped_column(PortableJSON, nullable=True)
+    context: Mapped[dict] = mapped_column(PortableJSON, default=dict)
+    request_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
