@@ -85,10 +85,22 @@ services:
   frontend:
     build:
       context: ./frontend
+      # NEXT_PUBLIC_* vars must be build ARGs, not runtime `environment:` —
+      # see the comment in frontend/Dockerfile for why (a real bug found
+      # during the BFF migration: the old `environment:`-only config here
+      # never actually reached the browser bundle).
+      args:
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8000}
     restart: unless-stopped
+    env_file: [.env]
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-      NEXT_PUBLIC_APP_API_TOKEN: ${NEXT_PUBLIC_APP_API_TOKEN:-}
+      # Server-only — read at request time by Next.js Route Handlers
+      # (app/api/backend/[...path]/route.ts, app/api/ws-ticket/route.ts,
+      # app/api/session-login/route.ts), never inlined into the browser
+      # bundle, so `environment:` (runtime) is correct here, unlike the
+      # NEXT_PUBLIC_* var above.
+      BACKEND_INTERNAL_URL: http://api:8000
+      BACKEND_API_TOKEN: ${APP_API_TOKEN:-}
     ports:
       - "3000:3000"
     depends_on:

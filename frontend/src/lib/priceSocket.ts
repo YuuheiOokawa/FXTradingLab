@@ -50,7 +50,21 @@ class PriceSocketManager {
     if (this.connecting) return;
     this.connecting = true;
     const instruments = Array.from(this.subscribedInstruments).join(",");
-    const url = wsUrl(`/ws/prices${instruments ? `?instruments=${instruments}` : ""}`);
+    // Fetching a ticket is async (docs/11_SECURITY.md "BFF migration") — a
+    // fresh one is required for every connection attempt since each is
+    // single-use, so this can't be hoisted out of ensureConnected().
+    wsUrl(`/ws/prices${instruments ? `?instruments=${instruments}` : ""}`)
+      .then((url) => this._connect(url))
+      .catch(() => {
+        this.connecting = false;
+        if (this.listeners.size > 0) {
+          setTimeout(() => this.ensureConnected(), this.reconnectDelay);
+          this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+        }
+      });
+  }
+
+  private _connect(url: string) {
     const ws = new WebSocket(url);
     this.ws = ws;
 

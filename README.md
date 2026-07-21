@@ -19,8 +19,10 @@ implemented versus what's designed-but-not-built yet.
 - Every order (paper or live) is validated by a `RiskEngine` before it can
   reach a broker; a Kill Switch can halt new orders and flatten positions
   instantly.
-- No broker API secret is ever sent to the browser — all broker communication
-  happens server-side only.
+- No broker API secret, and no backend credential of any kind, is ever sent to
+  the browser — the frontend acts as a backend-for-frontend (BFF), proxying
+  REST calls server-side and issuing short-lived, single-use tickets for the
+  WebSocket price stream. See `docs/11_SECURITY.md` "BFF migration".
 
 ## Stack
 
@@ -151,11 +153,15 @@ railway add --database redis
 railway up --service api                       # from backend/, after linking
 railway run --service api alembic upgrade head # run the initial migration
 
-# Vercel: deploy the frontend (root directory = frontend)
+# Vercel: deploy the frontend (root directory = frontend) — see
+# docs/11_SECURITY.md "BFF migration" for what each of these is for.
 cd frontend
 vercel link
-vercel env add NEXT_PUBLIC_API_URL production
-vercel env add NEXT_PUBLIC_APP_API_TOKEN production
+vercel env add NEXT_PUBLIC_WS_URL production
+vercel env add BACKEND_INTERNAL_URL production
+vercel env add BACKEND_API_TOKEN production
+vercel env add APP_API_TOKEN production
+vercel env add SESSION_SECRET production
 vercel --prod
 ```
 

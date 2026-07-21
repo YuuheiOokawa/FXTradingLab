@@ -1,43 +1,43 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { SESSION_COOKIE_NAME, SESSION_TTL_SECONDS, createSessionToken } from "@/lib/session";
+
 /**
- * Server-side login check (docs/11_SECURITY.md "Frontend login gate").
+ * Server-side login check (docs/11_SECURITY.md "BFF migration").
  *
- * Deliberately compares against `APP_API_TOKEN` — a server-only env var
- * (no `NEXT_PUBLIC_` prefix) that Next.js never inlines into a client
- * bundle — instead of `NEXT_PUBLIC_APP_API_TOKEN`. The previous version of
- * this gate compared the submitted value against `NEXT_PUBLIC_APP_API_TOKEN`
- * directly inside the `/login` page's own client component, which meant the
- * real secret was embedded in that page's JS bundle — and `/login` must
- * always be reachable by an unauthenticated visitor (that's the point of a
- * login page), so anyone could view-source `/login`, fetch its script tag,
- * and read the plaintext token straight out of it without ever knowing it
- * in advance. Moving the comparison here means the value the client can
- * compromise its own bundle to read is never the thing checked for login.
+ * Compares the submitted password against `APP_API_TOKEN` — a server-only
+ * env var (no `NEXT_PUBLIC_` prefix) Next.js never inlines into a client
+ * bundle — never against a client-visible copy (an earlier version of this
+ * gate compared inside the `/login` page's own client component against
+ * `NEXT_PUBLIC_APP_API_TOKEN`, which meant the real secret was embedded in
+ * that always-publicly-reachable page's JS bundle).
  *
- * The `fxlab_token` cookie this sets is `httpOnly` — client JS (including a
- * compromised/XSS'd page) cannot read it — and its value is only ever
- * written via this response header, never constructed by page code, so it
- * never appears in any file the browser downloads as source.
+ * On success this mints a *signed session token* (lib/session.ts) — not the
+ * password itself — as the cookie value, so the cookie and the login
+ * password are two different secrets: leaking one doesn't hand over the
+ * other. The cookie is `httpOnly` (client JS, including a compromised/XSS'd
+ * page, cannot read it), `secure` outside local dev, and `sameSite: strict`.
  */
 export async function POST(request: NextRequest) {
-  const expected = process.env.APP_API_TOKEN;
-  if (!expected) {
+  const expectedPassword = process.env.APP_API_TOKEN;
+  const sessionSecret = process.env.SESSION_SECRET;
+  if (!expectedPassword || !sessionSecret) {
     return NextResponse.json({ error: "server not configured" }, { status: 500 });
   }
 
   const body = await request.json().catch(() => null);
   const submitted = body?.token;
-  if (typeof submitted !== "string" || submitted !== expected) {
+  if (typeof submitted !== "string" || submitted !== expectedPassword) {
     return NextResponse.json({ error: "invalid token" }, { status: 401 });
   }
 
   const response = NextResponse.json({ ok: true });
-  response.cookies.set("fxlab_token", submitted, {
+  response.cookies.set(SESSION_COOKIE_NAME, await createSessionToken(sessionSecret), {
     httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "strict",
     path: "/",
-    maxAge: 8 * 60 * 60, // 8 hours — convenience gate, not a full session system
+    maxAge: SESSION_TTL_SECONDS,
   });
   return response;
 }

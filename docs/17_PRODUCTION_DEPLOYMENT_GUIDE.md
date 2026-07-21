@@ -134,26 +134,59 @@ railway run --service api alembic upgrade head
 1. Import the GitHub repo into Vercel; set **Root Directory** to `frontend`
    in the project's General settings (Vercel auto-detects Next.js once the
    root directory is correct).
-2. Environment variables (Project Settings → Environment Variables):
+2. Environment variables (Project Settings → Environment Variables) — see
+   `docs/11_SECURITY.md` "BFF migration" for what each of these is actually
+   for; **Environment** column matters (below) since these must differ
+   between Vercel's Production and Preview environments:
    ```
-   NEXT_PUBLIC_API_URL=https://<your-railway-api-domain>
-   NEXT_PUBLIC_APP_API_TOKEN=<same token as APP_API_TOKEN above>
-   APP_API_TOKEN=<same token again, WITHOUT the NEXT_PUBLIC_ prefix>
+   NEXT_PUBLIC_WS_URL=wss://<your-railway-api-domain>
+   BACKEND_INTERNAL_URL=https://<your-railway-api-domain>
+   BACKEND_API_TOKEN=<same token as the backend's APP_API_TOKEN>
+   APP_API_TOKEN=<the /login password — same value as above for the simplest setup>
+   SESSION_SECRET=<a second generated secret, e.g. the same python3 -c "..." command from Prerequisites>
    ```
-   Both frontend variables must be set to the **same value** as the backend's
-   `APP_API_TOKEN` — but they serve different purposes and one is NOT simply
-   redundant with the other: `NEXT_PUBLIC_APP_API_TOKEN` is what the browser
-   uses to actually call the Railway API/WebSocket, while the plain
-   `APP_API_TOKEN` (server-only, never shipped to the browser) is what
-   `middleware.ts` and `app/api/session-login/route.ts` check the login
-   cookie against. See `docs/11_SECURITY.md` "Frontend login gate" for why
-   the login check specifically must not use the `NEXT_PUBLIC_` copy.
+   Set all five to Vercel's **Production** environment only, scoped to the
+   Production deployment — do NOT also enable them for Preview
+   deployments. See "Locking down Preview deployments" below for why: a
+   Preview deploy that could reach the real production backend (or, if
+   using Railway private networking, one that can't reach it at all and
+   fails confusingly) is exactly the kind of gap `docs/15_PRODUCTION_
+   READINESS_REVIEW.md`'s BFF-migration pass was checking for.
+
+   `BACKEND_INTERNAL_URL` may instead point at a Railway **private
+   networking** hostname (`<service>.railway.internal`) rather than the
+   public `*.up.railway.app` domain, if the Vercel deployment reaches
+   Railway over a mechanism that supports it (e.g. a Railway-hosted proxy,
+   or if you later move the frontend itself onto Railway) — this is
+   strictly better when available, since it means the backend never needs a
+   publicly routable HTTP listener for REST at all, only for the WebSocket
+   the browser still connects to directly. Vercel serverless functions
+   reaching a Railway private-network hostname directly is not supported as
+   of this writing (they run outside Railway's network) — verify current
+   Railway/Vercel networking docs before assuming otherwise; the public
+   Railway domain is the default, working path from Vercel today.
 3. Deploy. Once live, go back to the Railway "api" service and set
    `ALLOWED_ORIGINS` to the real `https://<project>.vercel.app` domain (or
    your custom domain once attached) — the app is designed to fail closed
    (block all cross-origin requests) until this is set correctly in any
-   non-development environment, so the frontend won't be able to reach the
-   API until this matches.
+   non-development environment. This now matters specifically for the
+   WebSocket handshake's Origin check (`app/ws/auth.py`), since REST no
+   longer crosses origins at all (the browser only ever calls the Vercel
+   deployment's own `/api/backend/*`).
+
+### Locking down Preview deployments
+
+Vercel creates a Preview deployment for every branch/PR by default, each
+getting its own auto-generated URL. If that Preview deployment's environment
+variables point at the real production `BACKEND_INTERNAL_URL`/
+`BACKEND_API_TOKEN`, a Preview URL — often unauthenticated in front-end
+terms until this app's own `/login` gate, and sometimes shared casually for
+review — would have full BFF-proxied access to the production backend. Set
+Preview-scoped copies of the five variables above pointing at a **staging**
+backend instead (see `docs/15_PRODUCTION_READINESS_REVIEW.md` "Staging
+environment separation"), or leave them unset entirely for Preview so a
+Preview build fails closed (the BFF proxy returns 502s, per `route.ts`'s
+`BACKEND_UNREACHABLE` handling) rather than silently reaching production.
 
 ### Optional: deploy via GitHub Actions instead of the CLI
 
@@ -170,8 +203,8 @@ a second confirmation step before any deploy runs.
 
 ## 4. Verify the deployment
 
-1. Visit the Vercel URL — you should land on `/login` (since
-   `NEXT_PUBLIC_APP_API_TOKEN` is set); log in with the token.
+1. Visit the Vercel URL — you should land on `/login` (since `APP_API_TOKEN`
+   is set); log in with the password.
 2. Dashboard should show live-updating prices for the default watchlist
    within a few seconds (confirms worker → Redis → WebSocket → frontend path).
 3. Run a small backtest, submit a paper order, hit the Kill Switch and
@@ -263,9 +296,13 @@ worker died.
 
 ## Secrets checklist before going live
 
-- [ ] `APP_API_TOKEN` set to a real generated secret (not the placeholder)
+- [ ] Backend `APP_API_TOKEN` set to a real generated secret (not the placeholder)
 - [ ] `ALLOWED_ORIGINS` set to your actual frontend domain (not blank, not `*`)
-- [ ] `NEXT_PUBLIC_APP_API_TOKEN` matches `APP_API_TOKEN` exactly
+- [ ] Frontend `BACKEND_API_TOKEN` matches the backend's `APP_API_TOKEN` exactly
+- [ ] Frontend `SESSION_SECRET` is set to its own distinct generated secret
+- [ ] Frontend `APP_API_TOKEN`, `SESSION_SECRET`, `BACKEND_API_TOKEN` are
+      scoped to Vercel's **Production** environment only — not also enabled
+      for Preview deployments (see "Locking down Preview deployments" above)
 - [ ] `LIVE_TRADING_ENABLED=false` (confirm explicitly — don't assume the
       platform default matches this app's default)
 - [ ] No `.env` file committed to the repo (`git status` clean, `.gitignore`
