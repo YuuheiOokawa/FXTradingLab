@@ -227,6 +227,137 @@ disconnected" reading on the Dashboard mid-review that had nothing to do
 with the broker. Restarting the dev server resolved it immediately; noted
 here so it isn't mistaken for a real regression if seen again.
 
+## Update — a fourth pass: cloud migration readiness (P1–P6)
+
+This pass had a different mandate than the first three: not "is the app
+correct," but "is the app safe to actually run continuously in the cloud."
+Six priorities (P1–P6), worked in sequence, each following
+現状確認→脆弱性確認→設計→実装→Migration→Test→E2E→障害試験→ドキュメント更新
+(current-state check → vulnerability check → design → implementation →
+migration → test → E2E → failure testing → doc update) rather than design
+docs alone. Full detail lives in the docs cited per section; this is the
+consolidated finding+grade record.
+
+**P1 — Backend-for-Frontend migration.** The browser no longer holds any
+backend secret. `frontend/src/app/api/backend/[...path]/route.ts` proxies
+every REST call same-origin, attaching the real bearer token server-side;
+`frontend/src/app/api/ws-ticket/route.ts` mints a short-lived (45s),
+single-use WebSocket ticket (`app/ws/tickets.py`, Redis `GETDEL` — atomic
+read+delete, structurally un-replayable) in place of the old long-lived
+shared token the browser used to hold directly. Browser session auth is a
+signed, stateless HMAC-SHA256 cookie (`frontend/src/lib/session.ts`, Web
+Crypto so it runs in Edge middleware) — `HttpOnly`/`sameSite=strict`/
+`Secure` outside dev — decoupled from the login password itself (leaking
+the cookie doesn't hand over the password or vice versa). WS handshakes
+also now check `Origin` explicitly (`app/ws/auth.py`), since Starlette's
+WS routes don't run through `CORSMiddleware`. Verified live end-to-end
+(curl + a real WebSocket + a full Playwright login→dashboard→logout
+run), not just designed. See `docs/11_SECURITY.md` "BFF migration".
+
+**P2 — Staging environment.** `deploy.yml` now requires an explicit
+`environment` input (`staging`/`production`, no default) so a bad manual
+trigger can't accidentally target production; Railway Environments and a
+separate Vercel project are documented as the isolation mechanism
+(`docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md` "6. Staging environment").
+Staging gets its own boot guard: `APP_ENV=staging` with
+`LIVE_TRADING_ENABLED=true` now refuses to start at all
+(`app/main.py`, `backend/tests/test_boot_guards.py`) — staging can never
+place a real order even by misconfiguration.
+
+**P3 — Deployment manifest verification.** Found and fixed a real bug:
+`NEXT_PUBLIC_WS_URL` was declared in `docker-compose.yml`'s
+runtime-only `environment:` block, which Next.js's build-time inlining
+never sees — the Dockerfile now takes it as a build `ARG`. Also
+identified (and explicitly flagged as unverified, not silently assumed)
+a Railway config-precedence risk: `railway.toml`'s `[deploy]` block may
+override a dashboard-set worker Start Command, since the worker shares
+the API's root directory; `docs/17` now tells the operator exactly what
+log line proves which is actually running. Vercel Preview deployments are
+now documented as locked to Mock/Staging only, never Production
+resources.
+
+**P4 — Long-running and chaos testing.** Built and actually ran (not just
+designed) `backend/scripts/soak_test.py` and `backend/scripts/chaos_test.py`
+against the live local stack: 120,000 simulated ticks at ~549/sec with
++0.4MB RSS growth (no leak) and a stable DB pool; 12/12 chaos checks
+passed (Redis down, Postgres down, a 1000-tick abnormal-price flood, rate
+limiting, worker kill, API kill) — each with the actual detection/recovery
+behavior recorded, not assumed. See `docs/19_LONG_RUNNING_AND_CHAOS_TESTING.md`
+for the full dated results and an honest "what this does not confirm"
+section (no full-stack broker-disconnect chaos, no real multi-day soak).
+
+**P5 — Fail-closed trading safety audit.** Found and fixed two real
+fail-open bugs: `submit_paper_order`'s `price_stale` flag was computed as
+`not broker_connected` (a broker call returning HTTP 200 with a stale
+cached quote was never flagged), and `OandaAdapter.get_current_price()`
+stamped quotes with local receive-time instead of OANDA's own quote
+timestamp — both fixed with regression tests
+(`docs/10_RISK_MANAGEMENT.md` "Fail-closed audit findings"). Added
+`GET /live/preflight` (independent auth/account/per-instrument checks,
+never places an order) and `POST /live/orders/preview` (runs the real
+Risk Engine + broker account/price/position lookup, but contains no call
+to `BrokerAdapter.create_order` anywhere in its body — a structural
+guarantee, tested with a broker double whose `create_order` raises if
+ever invoked). Implemented and unit-tested a GMO Coin Private API request
+signer (`app/brokers/gmo_coin.py::generate_private_api_signature`) while
+being explicit that it has not been verified against a real funded
+account or the live official docs (blocked by anti-bot protection both
+this pass and the prior one, per `docs/16_BROKER_SELECTION_REVIEW.md`).
+
+**P6 — Audit log and operations documentation.** A new `audit_logs` table
+and `app/services/audit.write_audit_log()` record a closed, named set of
+sensitive actions (login/logout, kill switch on/off, risk setting
+changes with before/after diffs, LIVE trading admin enable/disable, LIVE
+order preview/reject) — surfaced on the System page, verified live by
+toggling the Kill Switch in a real browser and confirming both entries
+appeared with correct diffs. Found and fixed a second real bug in the
+process: `deactivate_kill_switch` (and part of `activate_kill_switch`)
+committed the DB session *before* adding a `SystemEvent` log row, and
+`get_db()` does not auto-commit on session close — that log row was
+silently never persisted; the same bug would have dropped the new audit
+entries too if not caught. Backup/restore was verified for real (not just
+documented): `pg_dump` the live dev DB → `pg_restore` into a disposable
+database → row counts and exact `audit_logs` content confirmed identical
+via `diff`. New docs: `docs/20_DISASTER_RECOVERY.md` (per-failure-mode
+automatic-vs-manual procedures), `docs/21_OPERATIONS_RUNBOOK.md`
+(daily/weekly/monthly operator checks), `docs/22_PRODUCTION_CHECKLIST.md`
+(pre-deploy checkboxes), and `backend/scripts/deploy_smoke_test.py` (a
+real post-deploy smoke test — login through the BFF, REST through the
+proxy, WS ticket mint, and a live WebSocket tick — driven by
+`STAGING_BASE_URL`/`STAGING_WS_URL`/`STAGING_LOGIN_TOKEN`; verified for
+real against a local staging-config backend+frontend pair, 9/9 checks
+passing, including finding and fixing a real bug in the script itself —
+the WS routes are mounted without the `/api/v1` prefix REST routes use).
+
+Grade updates from this pass:
+
+| Area | Grade | Why |
+|---|---|---|
+| Security | A (raised from B) | The one named residual gap from the third pass — "a materially stronger boundary (BFF) so the browser never holds the real bearer token at all" — is now closed and verified live. WS auth is short-lived/single-use instead of a long-lived shared token. Session cookie is signed and decoupled from the login password. |
+| Deployment | B (unchanged) | Staging separation, deployment-manifest verification, and a real deploy smoke test are all now in place — but still B, not A: no actual cloud deploy was executed from this sandbox (no cloud credentials available here), and the Railway worker config-precedence question remains unverified against the real platform (documented as an explicit operator verification step rather than resolved). |
+| Broker Integration | B (unchanged) | GMO Coin's Private API signer is now implemented and unit-tested, narrowing the stub from "not started" to "implemented, unverified against a live account" — still needs a funded account to close out fully. OANDA path gained a real fail-open fix (quote timestamp source). |
+| Testing | A (unchanged) | 189 backend tests (up from 149), 12 frontend unit tests, 12/12 Playwright E2E, plus two new categories of testing this pass didn't have before: a real soak test (120k ticks) and a real chaos test (12 fault-injection scenarios) — both executable on demand, not one-off manual runs. |
+| Observability | A (unchanged) | Audit log is a new, distinct capability from the existing structured logging / `/health` / `/ready` / `/metrics` — covered under Security above, not a grade change to this row. Metrics remain JSON-only (no Prometheus exposition format) and the specific counters requested this pass (`price_updates_total`, `orders_rejected_total`, etc.) were not added — see "Honest list of what's still open" below. |
+
+New real bugs found and fixed this pass, beyond the two already-graded
+areas above: the `NEXT_PUBLIC_WS_URL` Docker build-arg gap (P3) and the
+`deactivate_kill_switch` commit-ordering bug (P6) — bringing this
+project's total count of real, verified, fixed findings (not just
+theoretical concerns) across all four review passes to date well past a
+dozen, consistent with this review's established pattern of finding
+problems by actually building and exercising things rather than reading
+code and assuming it's correct.
+
+**Not reached this pass** (§33–36 of the requesting instruction — see
+"Honest list of what's still open" below for the specific items):
+Metrics additions beyond what already exists, a dedicated Performance
+Test (concurrent WS/price-update-rate load), Backtest Resource Control
+(so a heavy backtest can't degrade the realtime path), and a formal
+consolidated Production Preflight v2 tool that reports PASS/WARN/FAIL and
+can refuse startup/deployment on FAIL (`/live/preflight` and the
+`app/main.py` boot guards cover pieces of this today, but not as one
+consolidated tool).
+
 ## What "A" does and doesn't mean here
 
 An **A** means: the code does what it claims, is covered by a test that would
@@ -249,15 +380,41 @@ this pass didn't close:
 - Paper Trading partial fills — a limit/stop order fills entirely-or-not at
   the current poll tick; no partial-fill simulation. Documented as an
   extension point in `order_orchestrator.py`, not built.
-- A materially stronger security boundary (routing all API/WS traffic
+- ~~A materially stronger security boundary (routing all API/WS traffic
   through a backend-for-frontend so the browser never holds the real bearer
-  token) remains unbuilt — see `docs/11_SECURITY.md`.
+  token)~~ — implemented this pass (P1); see "a fourth pass" update above
+  and `docs/11_SECURITY.md` "BFF migration".
 - Realtime heartbeat frame independent of tick traffic — noted in the first
   pass, still not built (low practical risk for FX, see the Realtime row
   above).
 - No actual cloud deployment executed from this environment (no cloud
   credentials available in this sandbox) — `docs/17_PRODUCTION_DEPLOYMENT_GUIDE.md`
-  has the exact steps for the operator to run themselves.
+  has the exact steps for the operator to run themselves; this pass adds a
+  real smoke test (`backend/scripts/deploy_smoke_test.py`) to run
+  immediately after that deploy actually happens.
+- Metrics counters beyond what `/metrics` already exposes
+  (`price_updates_total`, `price_stale_total`, `signals_generated_total`,
+  `orders_requested_total`, `orders_rejected_total`,
+  `paper_orders_filled_total`, `broker_errors_total`,
+  `websocket_connections`, `worker_heartbeat_age`, `db_pool_usage`) — not
+  added this pass; `/metrics` today is JSON with uptime/broker-connected/
+  per-instrument last-tick only.
+- A dedicated Performance Test (50 concurrent WS connections, ~100
+  price updates/sec, multi-pair load, large history rendering, concurrent
+  Backtest execution) — not run this pass. The soak test (P4) covers
+  sustained single-stream throughput and leak detection, which is a
+  different question from concurrent-load performance.
+- Backtest Resource Control (queue/concurrency limit/timeout/cancel so a
+  heavy Backtest run can't degrade the realtime Worker/API/WebSocket path)
+  — not built this pass; Backtest still runs synchronously in-process on
+  the same event loop as everything else (`docs/05_API_DESIGN.md`
+  "Backtest").
+- A consolidated Production Preflight v2 tool reporting PASS/WARN/FAIL and
+  able to refuse startup/deployment on FAIL — not built as one tool this
+  pass. The individual pieces exist and are real (`GET /live/preflight`,
+  the `app/main.py` boot guards for missing tokens and staging+LIVE
+  misconfiguration, `GET /ready`), but nothing consolidates them into a
+  single pass/warn/fail report an operator or CI step can gate on.
 - ~~Signal outcome history tracking (did a BUY 80+ signal actually work out?)
   and the corresponding Analytics score-bucket accuracy view~~ — implemented
   in a later pass; see `docs/08_SIGNAL_ENGINE.md` "Signal outcome history".
