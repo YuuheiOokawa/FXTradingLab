@@ -125,7 +125,17 @@ class OandaAdapter(BrokerAdapter):
         p = prices[0]
         bid = float(p["bids"][0]["price"])
         ask = float(p["asks"][0]["price"])
-        return PriceQuote(instrument=instrument, bid=bid, ask=ask, ts=datetime.now(UTC))
+        # Use OANDA's own quote-generation timestamp (p["time"]), not local
+        # receive time — matches the streaming path below (ts=msg["time"]).
+        # Using local time here would silently mask exactly the failure mode
+        # a staleness check exists to catch: if OANDA ever returns a cached/
+        # delayed quote (a stuck connection, a degraded upstream feed on
+        # their side) while still responding 200 promptly, local receive-time
+        # would make it look perfectly fresh regardless of how old the quote
+        # actually is (docs/15_PRODUCTION_READINESS_REVIEW.md "Fail-closed
+        # trading safety audit").
+        ts = datetime.fromisoformat(p["time"].replace("Z", "+00:00")) if "time" in p else datetime.now(UTC)
+        return PriceQuote(instrument=instrument, bid=bid, ask=ask, ts=ts)
 
     async def get_candles(
         self,

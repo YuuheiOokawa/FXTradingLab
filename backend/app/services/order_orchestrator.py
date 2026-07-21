@@ -129,6 +129,17 @@ class OrderOrchestrator:
             quote = await self._broker.get_current_price(order.instrument)
             broker_connected = True
             spread_pips = quote.spread / pip
+            # A successful fetch does NOT by itself mean the quote is fresh —
+            # a broker call can return 200 with a genuinely stale/cached
+            # price (docs/15_PRODUCTION_READINESS_REVIEW.md "Fail-closed
+            # trading safety audit"). Compare the quote's own timestamp
+            # (OANDA's server-side quote-generation time, not local receive
+            # time — see app/brokers/oanda.py::get_current_price) against
+            # PRICE_STALE_SECONDS, the same threshold the realtime tick
+            # pipeline uses. This used to be inferred from broker_connected
+            # alone, which never caught this case at all.
+            price_age = (datetime.now(UTC) - quote.ts).total_seconds()
+            price_stale = price_age > self._settings.price_stale_seconds
             if order.order_type == "market":
                 # Slippage is an adverse offset - the actual fill is always
                 # slightly worse than the quoted price, same convention the
@@ -142,6 +153,7 @@ class OrderOrchestrator:
                 fill_price = 0.0  # not filled yet; set for real when the pending order triggers
         except BrokerConnectionError:
             broker_connected = False
+            price_stale = True
             spread_pips = 0.0
             fill_price = 0.0
 
@@ -165,7 +177,7 @@ class OrderOrchestrator:
         ctx = RiskContext(
             kill_switch_active=risk_settings.kill_switch_active,
             broker_connected=broker_connected,
-            price_stale=not broker_connected,
+            price_stale=price_stale,
             current_spread_pips=spread_pips,
             max_spread_pips=risk_settings.max_spread_pips_default,
             equity=equity,
@@ -324,6 +336,14 @@ class OrderOrchestrator:
             quote = await self._broker.get_current_price(instrument_row.symbol)
         except BrokerConnectionError:
             return None
+        # Same fail-closed rule as order entry (submit_paper_order above): a
+        # successful fetch is not proof of freshness. A pending order must
+        # never fill against a stale quote just because the broker call
+        # itself didn't raise (docs/15_PRODUCTION_READINESS_REVIEW.md
+        # "Fail-closed trading safety audit") — leave it pending and let the
+        # next poll (10s later) try again with a fresh quote instead.
+        if (datetime.now(UTC) - quote.ts).total_seconds() > self._settings.price_stale_seconds:
+            return None
 
         pip = pip_size_for(instrument_row.symbol)
         slippage = self._settings.paper_slippage_pips * pip
@@ -382,6 +402,114 @@ class OrderOrchestrator:
         return order
 
     # ------------------------------------------------------------------- live --
+
+    async def preview_live_order(self, session: AsyncSession, order: OrderRequest) -> dict:
+        """Runs the exact Risk Engine validation and order-construction
+        pipeline a real LIVE order would go through — real TRADING broker
+        account/position state, real spread, real staleness check — but
+        this method contains no call to `BrokerAdapter.create_order`
+        anywhere in its body. That is a structural guarantee, not a flag
+        that could be misconfigured: no code path through this function can
+        ever place a real order, so it is deliberately NOT gated behind
+        `check_live_gates()` — those three gates exist to protect against
+        real execution, and there is nothing here to protect against
+        (docs/15_PRODUCTION_READINESS_REVIEW.md "LIVE Trading Dry Run").
+
+        Lets an operator verify Risk Engine sizing/limits and order
+        construction work correctly against a real configured broker's real
+        account state *before* ever flipping any of the three LIVE gates —
+        including in `staging`, where `LIVE_TRADING_ENABLED` can never be
+        true at all (`app/main.py`'s boot guard).
+        """
+        if order.order_type != "market":
+            raise ValueError("preview_live_order only supports order_type='market' — LIVE execution itself is a stub (see submit_live_order)")
+
+        risk_settings = await get_or_create_risk_settings(session)
+        pip = pip_size_for(order.instrument)
+
+        try:
+            account = await self._trading_broker.get_account()
+            quote = await self._trading_broker.get_current_price(order.instrument)
+            positions = await self._trading_broker.get_positions()
+            broker_connected = True
+            spread_pips = quote.spread / pip
+            price_age = (datetime.now(UTC) - quote.ts).total_seconds()
+            price_stale = price_age > self._settings.price_stale_seconds
+            estimated_entry = quote.ask if order.direction == "BUY" else quote.bid
+        except BrokerConnectionError as exc:
+            account = None
+            positions = []
+            broker_connected = False
+            price_stale = True
+            spread_pips = 0.0
+            estimated_entry = None
+            broker_error = str(exc)
+        else:
+            broker_error = None
+
+        equity = account.equity if account is not None else 0.0
+        open_position_count = len(positions)
+        same_symbol_count = sum(1 for p in positions if p.instrument == order.instrument)
+        risk_amount = (
+            abs(estimated_entry - order.stop_loss) * order.size
+            if estimated_entry is not None and order.stop_loss is not None
+            else 0.0
+        )
+        today_pnl = await _today_realized_pnl(session, "live")
+        daily_loss_pct = max(0.0, -today_pnl) / equity * 100 if equity > 0 else 0.0
+        consecutive = await _consecutive_losses(session, "live")
+
+        ctx = RiskContext(
+            kill_switch_active=risk_settings.kill_switch_active,
+            broker_connected=broker_connected,
+            price_stale=price_stale,
+            current_spread_pips=spread_pips,
+            max_spread_pips=risk_settings.max_spread_pips_default,
+            equity=equity,
+            risk_amount=risk_amount,
+            max_risk_per_trade_pct=risk_settings.max_risk_per_trade_pct,
+            daily_loss_pct=daily_loss_pct,
+            max_daily_loss_pct=risk_settings.max_daily_loss_pct,
+            current_drawdown_pct=0.0,  # LIVE has no local high-water-mark table yet — see docs/14_IMPLEMENTATION_PLAN.md
+            max_drawdown_pct=risk_settings.max_drawdown_pct,
+            open_position_count=open_position_count,
+            max_concurrent_positions=risk_settings.max_concurrent_positions,
+            same_symbol_open_count=same_symbol_count,
+            max_same_symbol_positions=risk_settings.max_same_symbol_positions,
+            consecutive_losses=consecutive,
+            consecutive_loss_stop_count=risk_settings.consecutive_loss_stop_count,
+            is_duplicate_idempotency_key=False,
+        )
+        result = _engine.validate(ctx)
+
+        preview = {
+            "would_be_approved": result.approved,
+            "reject_code": result.code,
+            "reject_message": result.message,
+            "instrument": order.instrument,
+            "direction": order.direction,
+            "size": order.size,
+            "estimated_entry_price": estimated_entry,
+            "stop_loss": order.stop_loss,
+            "take_profit": order.take_profit,
+            "estimated_risk_amount": risk_amount,
+            "account_equity": equity,
+            "spread_pips": spread_pips,
+            "price_stale": price_stale,
+            "broker_connected": broker_connected,
+            "broker_error": broker_error,
+            "live_gates_satisfied": not self.check_live_gates(risk_settings.live_trading_admin_enabled, confirm_live=True),
+        }
+        await _log_event(
+            session,
+            "live_dry_run",
+            "info",
+            f"LIVE order preview: {order.direction} {order.instrument} x{order.size} -> "
+            f"{'would approve' if result.approved else f'would reject ({result.code})'}",
+            preview,
+        )
+        await session.commit()
+        return preview
 
     def check_live_gates(self, risk_settings_admin_enabled: bool, confirm_live: bool) -> list[str]:
         """Returns the list of unmet gates (empty = all satisfied). Three

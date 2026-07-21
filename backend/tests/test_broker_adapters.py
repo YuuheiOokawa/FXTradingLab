@@ -68,6 +68,36 @@ async def test_oanda_get_current_price_parses_response(oanda_adapter):
 
 
 @respx.mock
+async def test_oanda_get_current_price_uses_oandas_own_quote_timestamp(oanda_adapter):
+    """docs/15_PRODUCTION_READINESS_REVIEW.md "Fail-closed trading safety
+    audit": using local receive-time instead of OANDA's own quote-generation
+    time would mask a broker-side stale/cached quote — the response's own
+    `time` field must be what `PriceQuote.ts` actually reflects."""
+    old_quote_time = "2020-01-01T00:00:00.000000000Z"
+    respx.get("https://api-fxpractice.oanda.com/v3/accounts/001-001-1234567-001/pricing").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "prices": [
+                    {
+                        "instrument": "USD_JPY",
+                        "time": old_quote_time,
+                        "bids": [{"price": "157.10"}],
+                        "asks": [{"price": "157.16"}],
+                    }
+                ]
+            },
+        )
+    )
+    quote = await oanda_adapter.get_current_price("USD_JPY")
+    assert quote.ts.year == 2020
+    # Confirms this old timestamp would actually trip a staleness check —
+    # not just that it parsed, but that it parsed to something recognizably
+    # ancient rather than silently falling back to "now".
+    assert (datetime.now(UTC) - quote.ts).total_seconds() > 3600
+
+
+@respx.mock
 async def test_oanda_auth_error_maps_to_broker_auth_error(oanda_adapter):
     respx.get("https://api-fxpractice.oanda.com/v3/accounts/001-001-1234567-001/pricing").mock(
         return_value=httpx.Response(401, text="unauthorized")

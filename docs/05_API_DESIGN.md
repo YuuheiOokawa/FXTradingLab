@@ -57,6 +57,20 @@ disabled in local dev for convenience.
 
 ### Live trading (planned — scaffolded, execution path disabled; see `10_RISK_MANAGEMENT.md`)
 - `GET /live/account`, `GET /live/positions`
+- `GET /live/preflight` — validates the configured TRADING broker's credentials
+  (auth, account access, per-watchlist-instrument price access) without ever
+  placing an order. Always available; each check reported independently so
+  "auth is fine but this instrument has no access" is distinguishable from
+  "the token itself is wrong". See `docs/15_PRODUCTION_READINESS_REVIEW.md`
+  "Broker Credential Validation".
+- `POST /live/orders/preview` — LIVE order **dry run**: runs the exact Risk
+  Engine validation and order-construction pipeline a real order would go
+  through, using the real broker's real account/position state, but
+  contains no call to the broker's order-write endpoint anywhere in its
+  implementation — a structural guarantee, not a flag. Always available
+  regardless of the three LIVE gates (there is nothing here for those gates
+  to protect against). See `docs/15_PRODUCTION_READINESS_REVIEW.md`
+  "LIVE Trading Dry Run".
 - `POST /live/orders` — returns `403` unless all three LIVE gates are satisfied.
 - `POST /live/kill-switch` — highest-priority endpoint, bypasses normal request queueing
   concerns; always available regardless of other gate state.

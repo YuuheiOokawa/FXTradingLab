@@ -30,6 +30,8 @@ implementer has the exact shape to fill in.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 from collections.abc import AsyncIterator
 from datetime import datetime
 
@@ -51,12 +53,42 @@ _NOT_IMPLEMENTED = (
 )
 
 
+def generate_private_api_signature(api_secret: str, timestamp_ms: str, method: str, path: str, body: str = "") -> str:
+    """HMAC-SHA256 signature for GMO Coin's FX Private API, per the
+    documented scheme (timestamp + method + path + body, HMAC-SHA256 keyed
+    by the API secret, hex digest) — see docs/06_BROKER_API_DESIGN.md and
+    docs/16_BROKER_SELECTION_REVIEW.md.
+
+    CAVEAT (docs/15_PRODUCTION_READINESS_REVIEW.md "GMO Coin Fixture Based
+    Test"): this was implemented from the publicly documented algorithm
+    (corroborated across multiple independent third-party write-ups) rather
+    than a direct read of the live fxdocs page — automated fetches of
+    api.coin.z.com hit anti-bot protection during this and the prior
+    review's research (see docs/16). `tests/test_gmo_coin_signature.py`
+    verifies this function is internally consistent (deterministic, keyed
+    correctly, sensitive to every input) — it does NOT verify the result
+    matches what GMO Coin's real server actually expects, since that can
+    only be confirmed against a real account. Verify against
+    https://api.coin.z.com/fxdocs/ directly before relying on this for a
+    real account, and do not treat a passing test suite as proof this is
+    correct against the live API.
+
+    `path` must start with `/v1` and must NOT include a `/private` prefix
+    segment, per the documented scheme (GET requests use an empty body).
+    """
+    message = f"{timestamp_ms}{method.upper()}{path}{body}"
+    return hmac.new(api_secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 class GmoCoinAdapter(BrokerAdapter):
     provider = "gmo_coin"
 
     def __init__(self, api_key: str, api_secret: str) -> None:
         self._api_key = api_key
         self._api_secret = api_secret
+
+    def _sign(self, timestamp_ms: str, method: str, path: str, body: str = "") -> str:
+        return generate_private_api_signature(self._api_secret, timestamp_ms, method, path, body)
 
     async def get_current_price(self, instrument: str) -> PriceQuote:
         raise NotImplementedError(

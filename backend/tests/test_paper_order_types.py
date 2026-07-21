@@ -3,6 +3,7 @@ Trading"): market-order slippage and limit/stop order-type groundwork. Real
 Postgres, not mocks — the pending-order fill path spans OrderOrchestrator +
 a worker job querying the DB directly."""
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -12,6 +13,7 @@ from app.core.config import get_settings
 from app.services.market_data import ensure_instruments
 from app.services.order_orchestrator import OrderOrchestrator
 from app.services.repo import get_or_create_paper_account, get_or_create_risk_settings
+from app.services.risk_engine import RiskRejected
 from app.worker.jobs import paper_pending_orders
 
 PIP = 0.01  # USD_JPY
@@ -22,15 +24,14 @@ class FixedPriceBroker(MockAdapter):
     market data is deterministic-but-moving, which makes asserting an exact
     "did the trigger fire at this price" boundary unreliable."""
 
-    def __init__(self, bid: float, ask: float) -> None:
+    def __init__(self, bid: float, ask: float, ts: datetime | None = None) -> None:
         super().__init__()
         self.bid = bid
         self.ask = ask
+        self.ts = ts
 
     async def get_current_price(self, instrument: str) -> PriceQuote:
-        from datetime import UTC, datetime
-
-        return PriceQuote(instrument=instrument, bid=self.bid, ask=self.ask, ts=datetime.now(UTC))
+        return PriceQuote(instrument=instrument, bid=self.bid, ask=self.ask, ts=self.ts or datetime.now(UTC))
 
 
 def _order(**overrides) -> OrderRequest:
@@ -195,3 +196,55 @@ async def test_oanda_and_mock_adapters_reject_non_market_create_order():
     oanda = OandaAdapter(api_token="fake", account_id="fake", environment="practice")
     with pytest.raises(BrokerOrderRejected):
         await oanda.create_order(order)
+
+
+async def test_submit_paper_order_rejects_a_stale_quote_even_though_the_fetch_succeeded(db_session):
+    """docs/15_PRODUCTION_READINESS_REVIEW.md "Fail-closed trading safety
+    audit": a broker call returning 200 with an old quote must be treated
+    the same as a broker outage for order-entry purposes — a successful
+    fetch alone was previously (incorrectly) treated as proof of freshness."""
+    await ensure_instruments(["USD_JPY"])
+    settings = get_settings()
+    stale_ts = datetime.now(UTC) - timedelta(seconds=settings.price_stale_seconds + 5)
+    broker = FixedPriceBroker(bid=150.00, ask=150.02, ts=stale_ts)
+    orchestrator = OrderOrchestrator(broker)
+
+    order = _order(direction="BUY", stop_loss=149.0, take_profit=152.0)
+    with pytest.raises(RiskRejected) as exc_info:
+        await orchestrator.submit_paper_order(db_session, order)
+    assert exc_info.value.code == "PRICE_FEED_STALE"
+
+
+async def test_submit_paper_order_accepts_a_fresh_quote(db_session):
+    """Companion to the stale-quote test above — confirms the fix didn't
+    just make every order rejected."""
+    await ensure_instruments(["USD_JPY"])
+    broker = FixedPriceBroker(bid=150.00, ask=150.02, ts=datetime.now(UTC))
+    orchestrator = OrderOrchestrator(broker)
+
+    order = _order(direction="BUY", stop_loss=149.0, take_profit=152.0)
+    outcome = await orchestrator.submit_paper_order(db_session, order)
+    assert outcome.approved is True
+
+
+async def test_try_fill_pending_order_does_not_fill_on_a_stale_quote(db_session):
+    """Same fail-closed rule applied to the pending-order fill path
+    (app/worker/jobs/paper_pending_orders.py's 10s poll): a limit/stop order
+    whose trigger price is technically crossed must NOT fill against a
+    stale quote — it stays pending until a fresh one confirms the trigger."""
+    await ensure_instruments(["USD_JPY"])
+    orchestrator = OrderOrchestrator(FixedPriceBroker(bid=150.00, ask=150.02))
+    order = _order(order_type="limit", limit_price=149.50, direction="BUY")
+    outcome = await orchestrator.submit_paper_order(db_session, order)
+    pending_order = outcome.order
+
+    settings = get_settings()
+    stale_ts = datetime.now(UTC) - timedelta(seconds=settings.price_stale_seconds + 5)
+    # Ask has now "dropped" to the limit price — would trigger a fill if fresh.
+    stale_broker = FixedPriceBroker(bid=149.48, ask=149.50, ts=stale_ts)
+    orchestrator_stale = OrderOrchestrator(stale_broker)
+
+    position = await orchestrator_stale.try_fill_pending_order(db_session, pending_order)
+    assert position is None
+    await db_session.refresh(pending_order)
+    assert pending_order.status == "pending"

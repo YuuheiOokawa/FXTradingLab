@@ -112,3 +112,45 @@ RiskEngine.validate() -> SignalEngine.evaluate() -> OrderValidator (shape/limits
 Note: Risk Engine gating happens even before the signal is (re-)evaluated for
 freshness, so a stale or invalid system state can never reach signal evaluation with
 stale data and produce an order — see `app/services/order_orchestrator.py`.
+
+## Fail-closed audit findings (docs/15_PRODUCTION_READINESS_REVIEW.md
+"Fail-closed trading safety audit")
+
+A real gap was found and fixed in this pass: `price_stale` in `RiskContext`
+was being set to `not broker_connected` — meaning a broker call that
+returned 200 with an old/cached quote (not the same thing as a connection
+failure) was never recognized as stale at all, for either order entry
+(`submit_paper_order`) or the pending limit/stop fill path
+(`try_fill_pending_order`). Fixed on both paths: staleness is now computed
+from the actual quote's own timestamp against `PRICE_STALE_SECONDS`, the
+same threshold the realtime tick pipeline uses. This also surfaced a second,
+related bug in `OandaAdapter.get_current_price()`: it stamped every quote
+with local receive-time instead of OANDA's own quote-generation timestamp
+(present in their response as `time`, and already used correctly by the
+adapter's *streaming* path) — meaning even after the first fix, a genuinely
+stale OANDA quote would still have looked fresh. Both are fixed and covered
+by `tests/test_paper_order_types.py` and `tests/test_broker_adapters.py`.
+
+## Broker Credential Validation and LIVE Trading Dry Run
+
+Two tools exist to validate a real broker configuration *before* any of the
+three LIVE gates are touched, both structurally incapable of placing a real
+order (see `docs/05_API_DESIGN.md` "Live trading" for the endpoints):
+
+- **`GET /live/preflight`** — authentication, account access, and
+  per-watchlist-instrument price access, each reported independently.
+- **`POST /live/orders/preview`** — runs the real Risk Engine validation and
+  order-construction pipeline against the real broker's real account state
+  (`OrderOrchestrator.preview_live_order`), logging the would-be decision
+  (approve/reject + reason) to `SystemEvent` (category `live_dry_run`) —
+  but its implementation contains no call to `BrokerAdapter.create_order`
+  anywhere in its body, so no gate, flag, or future bug can make it place
+  a real order. This is why it's deliberately available even when
+  `LIVE_TRADING_ENABLED` is false (including in `staging`, where that env
+  var can never be true at all) — the three gates protect against real
+  execution, and there is nothing here to protect against.
+
+Both are covered by `tests/test_live_preview_and_preflight.py`, including a
+test double whose `create_order` raises `AssertionError` if ever called —
+the strongest assertion available that the dry-run path structurally cannot
+reach it, not just that it happened not to during one test run.

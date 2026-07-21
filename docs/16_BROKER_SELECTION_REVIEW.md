@@ -134,3 +134,23 @@ No changes to `BrokerAdapter`'s interface or to `06_BROKER_API_DESIGN.md`'s
 core conclusion were needed as a result of this review — see
 `app/brokers/gmo_coin.py`'s updated docstring for the precision fix (correct
 host distinction) that *was* made.
+
+## Update — GMO Coin Fixture Based Test (docs/15_PRODUCTION_READINESS_REVIEW.md)
+
+One concrete piece of `GmoCoinAdapter` was implemented and tested this pass,
+deliberately scoped to what's actually safe to build without a funded
+account or direct access to the live fxdocs page (still blocked by
+anti-bot protection as of this review — see above):
+`generate_private_api_signature()`, the Private API's documented
+HMAC-SHA256 request-signing scheme (`timestamp + method + path + body`,
+keyed by the API secret). Verified via `tests/test_gmo_coin_signature.py`
+against a hand-computed HMAC and for sensitivity to every input — but that
+test only proves the function is internally consistent, not that its
+output matches what GMO Coin's real server expects (the scheme was
+corroborated from multiple independent third-party sources, not the
+official page directly). Every other method on the adapter (order
+building, response parsing, WebSocket message handling, symbol mapping)
+remains an honest `NotImplementedError` stub — implementing those against
+a hypothesis of the API shape, with no way to verify the hypothesis against
+real responses, would risk shipping code that looks tested but silently
+doesn't work, which is worse than the stub it would replace.
