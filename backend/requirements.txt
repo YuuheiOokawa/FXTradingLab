@@ -8,6 +8,12 @@ asyncpg>=0.29.0
 psycopg2-binary>=2.9.9
 redis>=5.1.0
 httpx>=0.27.2
+# Lets Python verify TLS against the OS certificate store. Needed on networks
+# that terminate TLS with a private root CA (common in corporate environments),
+# where certifi's bundle alone rejects the connection. Optional at runtime —
+# app/brokers/yahoo.py falls back to normal certifi verification without it, and
+# never disables verification either way.
+truststore>=0.9.0
 pandas>=2.2.3
 numpy>=2.1.2
 apscheduler>=3.10.4

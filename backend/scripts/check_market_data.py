@@ -1,25 +1,27 @@
-"""Verify a real OANDA connection end-to-end, before trusting it with anything.
+"""Verify the configured market-data feed end-to-end, before trusting it.
 
 Checks, in order, the things that actually break when swapping the built-in
 simulator for a live feed:
 
-1. credentials work at all (account summary),
-2. live prices arrive with a sane spread,
+1. the feed is reachable (and, for a broker, that credentials work),
+2. live prices arrive with a sane spread and a fresh timestamp,
 3. DAILY candles come back with enough history for the playbook (EMA200 needs
    ~260 bars), and the still-forming bar is correctly flagged `complete: false`
    — the playbook's look-ahead guard depends on that flag,
 4. the playbook actually evaluates on that real data.
 
-Read-only: it never places an order. Run it with OANDA credentials in the
-environment (or backend/.env):
+Works for whichever provider is configured. Read-only: it never places an order.
 
-    OANDA_API_TOKEN=... OANDA_ACCOUNT_ID=... BROKER_PROVIDER=oanda \
-        python -m scripts.check_oanda
+    cd backend && python -m scripts.check_market_data
+
+With MARKET_DATA_PROVIDER=yahoo this needs no account at all. For OANDA, set
+OANDA_API_TOKEN / OANDA_ACCOUNT_ID / BROKER_PROVIDER=oanda first.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import UTC, datetime
 
 from app.brokers.factory import get_market_data_provider
 from app.brokers.schemas import Granularity
@@ -34,37 +36,62 @@ def line(status: str, msg: str) -> None:
     print(f"[{status}] {msg}")
 
 
+SIMULATED_PROVIDERS = {"mock"}
+# Sources that serve real prices without being a broker, so they legitimately
+# have no account to report.
+NO_ACCOUNT_PROVIDERS = {"yahoo"}
+
+
 async def main() -> int:
     settings = get_settings()
-    print(f"broker_provider = {settings.broker_provider}")
-    print(f"environment     = {settings.oanda_environment}")
+    market_data = settings.market_data_provider or settings.broker_provider
+    print(f"market data     = {market_data}")
+    print(f"broker (orders) = {settings.broker_provider}")
     print(f"watchlist       = {settings.watchlist}\n")
 
-    if settings.broker_provider != "oanda":
-        line(WARN, "BROKER_PROVIDER is not 'oanda' — this will exercise the built-in simulator, not a real feed.")
+    if market_data in SIMULATED_PROVIDERS:
+        line(
+            WARN,
+            f"market data provider is '{market_data}' — a seeded random walk, not a real feed. "
+            "Forward-test results against it mean nothing. Set MARKET_DATA_PROVIDER=yahoo "
+            "(no account needed) or configure a broker.",
+        )
 
     broker = get_market_data_provider()
     failures = 0
 
-    # 1. credentials
-    try:
-        account = await broker.get_account()
-        line(OK, f"account {account.account_id}: balance {account.balance:,.0f} {account.currency}")
-    except Exception as exc:
-        line(BAD, f"account lookup failed: {type(exc).__name__}: {exc}")
-        return 1  # nothing else can work without this
+    # 1. reachability / credentials
+    if market_data in NO_ACCOUNT_PROVIDERS:
+        line(OK, f"'{market_data}' is a market-data-only source — no account to check (expected)")
+    else:
+        try:
+            account = await broker.get_account()
+            line(OK, f"account {account.account_id}: balance {account.balance:,.0f} {account.currency}")
+        except Exception as exc:
+            line(BAD, f"account lookup failed: {type(exc).__name__}: {exc}")
+            return 1  # nothing else can work without this
 
     for symbol in settings.watchlist:
         print(f"\n--- {symbol} ---")
 
-        # 2. live price
+        # 2. live price: value, spread, and freshness
         try:
             q = await broker.get_current_price(symbol)
             spread = q.ask - q.bid
-            line(OK, f"price bid={q.bid} ask={q.ask} spread={spread:.5f}")
+            age = (datetime.now(UTC) - q.ts).total_seconds()
+            line(OK, f"price bid={q.bid} ask={q.ask} spread={spread:.5f} age={age:.0f}s")
             if spread <= 0:
                 line(BAD, "non-positive spread — the feed is wrong")
                 failures += 1
+            # The Risk Engine refuses to trade on a stale quote, so a feed that
+            # is always older than this threshold blocks every order silently.
+            if age > settings.price_stale_seconds:
+                line(
+                    WARN,
+                    f"quote is older than PRICE_STALE_SECONDS ({settings.price_stale_seconds}s). "
+                    "The Risk Engine will reject orders while this holds. Expected when the FX "
+                    "market is closed (weekends); otherwise raise the threshold or use a faster feed.",
+                )
         except Exception as exc:
             line(BAD, f"price failed: {type(exc).__name__}: {exc}")
             failures += 1
@@ -82,9 +109,9 @@ async def main() -> int:
             if dropped == 0:
                 line(
                     WARN,
-                    "no candle was flagged as still forming. Real OANDA marks today's bar "
-                    "complete=false; if this persists during market hours the look-ahead "
-                    "guard is not protecting anything.",
+                    "no candle was flagged as still forming. A real feed marks today's bar "
+                    "as incomplete; if this persists during market hours the look-ahead guard "
+                    "is not protecting anything (the built-in simulator never flags one).",
                 )
         except Exception as exc:
             line(BAD, f"candles failed: {type(exc).__name__}: {exc}")

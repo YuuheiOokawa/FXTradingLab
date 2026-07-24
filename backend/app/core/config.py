@@ -13,7 +13,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AppEnv = Literal["development", "staging", "production"]
 BrokerEnvironment = Literal["practice", "live"]
-BrokerProvider = Literal["mock", "oanda", "gmo_coin"]
+# "yahoo" is market-data only (app/brokers/yahoo.py): real prices with no
+# account or identity verification, for forward testing before committing to a
+# broker. It cannot execute orders and raises if asked to.
+BrokerProvider = Literal["mock", "oanda", "gmo_coin", "yahoo"]
 
 
 class Settings(BaseSettings):

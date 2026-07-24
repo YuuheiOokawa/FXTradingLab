@@ -213,12 +213,31 @@ hand-placed order cannot flatter the record.
 > multi-year stretches (2013-2020) where the approach bleeds. Forward-test on
 > paper before risking anything real.
 
-### Connecting real market data (OANDA practice)
+### Connecting real market data
 
 The built-in simulator is a seeded random walk — fine for exercising the app,
-useless for judging a strategy. **Forward-test numbers only mean something once
-real prices are connected.** Create a free OANDA **practice** account, then copy
-what you need from `backend/.env.oanda.example` into `backend/.env`:
+worthless for judging a strategy. **Forward-test numbers only mean something
+once real prices are connected.** Two ways to do that:
+
+**Option A — Yahoo Finance (no account, no ID verification).** Market data only;
+paper trading simulates its own fills and never needs a broker. Copy
+`backend/.env.yahoo.example` into `backend/.env`:
+
+```
+MARKET_DATA_PROVIDER=yahoo
+BROKER_PROVIDER=mock
+PRICE_STALE_SECONDS=120
+```
+
+What it costs you, stated plainly: an unofficial endpoint with no uptime
+guarantee, one published price rather than a real bid/ask (a 1.5-pip spread is
+synthesised, and a live broker's will differ), and no order execution. Daily
+bars are the honest use — which is exactly what the playbook needs. Setting
+`BROKER_PROVIDER=yahoo` is refused at startup rather than failing later at the
+moment an order is attempted.
+
+**Option B — OANDA practice.** Real broker feed, and the same account carries
+forward to live trading. Copy from `backend/.env.oanda.example`:
 
 ```
 BROKER_PROVIDER=oanda
@@ -227,18 +246,25 @@ OANDA_ACCOUNT_ID=...
 OANDA_ENVIRONMENT=practice
 ```
 
-Verify before trusting it — read-only, never places an order:
+Either way, verify before trusting it — read-only, never places an order:
 
 ```bash
 cd backend
-python -m scripts.check_oanda
+python -m scripts.check_market_data
 ```
 
-It checks credentials, spreads, that daily history is deep enough for the
-playbook's EMA200 (~260 closed bars), that the still-forming bar is flagged
-`complete: false` (the look-ahead guard depends on it), and that each pair's
-playbook evaluates. Note the simulator marks every candle final, so that guard
-is only genuinely exercised against a real feed.
+It checks reachability, spreads, **quote freshness against `PRICE_STALE_SECONDS`**
+(the Risk Engine refuses to trade on a stale price, so a slow feed silently
+blocks every order), that daily history is deep enough for the playbook's EMA200
+(~260 closed bars), that the still-forming bar is flagged incomplete (the
+look-ahead guard depends on it), and that each pair's playbook evaluates. The
+simulator marks every candle final, so that guard is only genuinely exercised
+against a real feed.
+
+> On networks that terminate TLS with a private root CA, Python rejects the
+> connection because certifi does not carry that CA. `truststore` (in
+> `requirements.txt`) makes Python use the OS certificate store instead.
+> Verification is never disabled.
 
 Then set **auto_mode = `full_auto`** and let it run. Daily rules trade rarely, so
 expect days-to-weeks before the Analytics forward test has enough closed trades

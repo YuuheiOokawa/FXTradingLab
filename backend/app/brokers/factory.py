@@ -27,6 +27,10 @@ def _build(provider: BrokerProvider, settings: Settings) -> BrokerAdapter:
             account_id=settings.oanda_account_id,
             environment=settings.oanda_environment,
         )
+    if provider == "yahoo":
+        from app.brokers.yahoo import YahooMarketDataAdapter
+
+        return YahooMarketDataAdapter(poll_interval_ms=settings.poll_interval_ms)
     if provider == "gmo_coin":
         if not settings.gmo_coin_api_key or not settings.gmo_coin_api_secret:
             logger.warning("provider=gmo_coin but credentials are not set; falling back to MockAdapter.")
@@ -51,6 +55,12 @@ def get_market_data_provider() -> BrokerAdapter:
     return _market_data_instance
 
 
+# Providers that can serve prices but can never execute an order. Setting one of
+# these as BROKER_PROVIDER is a configuration mistake that would otherwise only
+# surface at the moment an order is attempted.
+MARKET_DATA_ONLY_PROVIDERS = frozenset({"yahoo"})
+
+
 def get_trading_broker() -> BrokerAdapter:
     """Where orders actually get sent (docs/10_RISK_MANAGEMENT.md,
     docs/15_PRODUCTION_READINESS_REVIEW.md). Always `BROKER_PROVIDER` — trading
@@ -58,6 +68,12 @@ def get_trading_broker() -> BrokerAdapter:
     global _trading_instance
     if _trading_instance is None:
         settings = get_settings()
+        if settings.broker_provider in MARKET_DATA_ONLY_PROVIDERS:
+            raise ValueError(
+                f"BROKER_PROVIDER={settings.broker_provider!r} is a market-data-only source and "
+                "cannot execute orders. Set MARKET_DATA_PROVIDER to it instead, and leave "
+                "BROKER_PROVIDER as a real broker (or 'mock' for paper trading)."
+            )
         _trading_instance = _build(settings.broker_provider, settings)
         _warn_if_split(settings)
     return _trading_instance
