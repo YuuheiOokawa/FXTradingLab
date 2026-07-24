@@ -16,17 +16,41 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.brokers.base import BrokerAdapter
-from app.brokers.errors import BrokerConnectionError
+from app.brokers.errors import BrokerConnectionError, BrokerOrderRejected
 from app.brokers.schemas import OrderRequest
 from app.core.config import Settings, get_settings
 from app.db.models.journal import SystemEvent, TradeJournal
 from app.db.models.market import Instrument
 from app.db.models.trading import LiveOrder, LivePosition, PaperAccount, PaperOrder, PaperPosition
 from app.services.audit import write_audit_log
-from app.services.repo import get_instrument_by_symbol, get_or_create_paper_account, get_or_create_risk_settings
+from app.services.repo import (
+    get_instrument_by_symbol,
+    get_or_create_broker_account,
+    get_or_create_paper_account,
+    get_or_create_risk_settings,
+)
 from app.services.risk_engine import RiskContext, RiskEngine, RiskRejected
 
 _engine = RiskEngine()
+
+# Idempotency-key prefix the auto-trader stamps on the orders it opens
+# (app/services/auto_trader.py), which is what lets a closed trade be attributed
+# back to the playbook style that produced it.
+AUTO_KEY_PREFIX = "auto-"
+
+
+def _strategy_code_for(position: PaperPosition, symbol: str) -> str | None:
+    """Which playbook style opened this position, or None if a human did.
+
+    Recorded on every journal row so forward-test analytics can report results
+    per strategy rather than lumping hand-placed and automated trades together.
+    """
+    if not (position.opening_idempotency_key or "").startswith(AUTO_KEY_PREFIX):
+        return None
+    from app.services.playbook import config_for
+
+    cfg = config_for(symbol)
+    return cfg.style if cfg is not None else None
 
 
 class LiveTradingDisabled(Exception):
@@ -80,6 +104,26 @@ class OrderOutcome:
     position: PaperPosition | LivePosition | None = None
     rejection_code: str | None = None
     rejection_message: str | None = None
+
+
+@dataclass
+class LiveAssessment:
+    """Result of validating a LIVE order against real broker state.
+
+    Produced by `_assess_live_order` and consumed by both the dry run and the
+    real submission, so the two can never disagree about whether an order would
+    be approved.
+    """
+
+    result: "object"  # RiskCheckResult
+    risk_settings: object
+    estimated_entry: float | None
+    equity: float
+    risk_amount: float
+    spread_pips: float
+    price_stale: bool
+    broker_connected: bool
+    broker_error: str | None
 
 
 class OrderOrchestrator:
@@ -277,13 +321,30 @@ class OrderOrchestrator:
         await session.commit()
         return OrderOutcome(approved=True, order=filled_order, position=position)
 
-    async def close_paper_position(self, session: AsyncSession, position_id: uuid.UUID) -> PaperPosition:
+    async def close_paper_position(
+        self,
+        session: AsyncSession,
+        position_id: uuid.UUID,
+        reason: str = "manual close",
+        close_price: float | None = None,
+    ) -> PaperPosition:
+        """Close an open paper position.
+
+        `reason` is recorded on the journal row so a forward test can tell a
+        stop-out from a target hit from a discretionary close — without it every
+        trade reads as "manual close" and the strategy cannot be evaluated.
+        `close_price` lets a bracket fill at its trigger level rather than at
+        whatever the price has drifted to since.
+        """
         position = await session.get(PaperPosition, position_id)
         if position is None or position.status != "open":
             raise ValueError("position not open")
         instrument_row = await session.get(Instrument, position.instrument_id)
-        quote = await self._broker.get_current_price(instrument_row.symbol)
-        price = quote.bid if position.direction == "BUY" else quote.ask
+        if close_price is not None:
+            price = close_price
+        else:
+            quote = await self._broker.get_current_price(instrument_row.symbol)
+            price = quote.bid if position.direction == "BUY" else quote.ask
         pnl = (price - position.entry_price) if position.direction == "BUY" else (position.entry_price - price)
         pnl *= position.size
 
@@ -310,11 +371,15 @@ class OrderOrchestrator:
                 stop_loss=position.stop_loss,
                 take_profit=position.take_profit,
                 pnl=pnl,
-                reason="manual close",
+                reason=reason,
+                strategy_code=_strategy_code_for(position, instrument_row.symbol),
                 closed_at=position.closed_at,
             )
         )
-        await _log_event(session, "order", "info", f"paper position closed: {instrument_row.symbol} pnl={pnl:.2f}")
+        await _log_event(
+            session, "order", "info",
+            f"paper position closed ({reason}): {instrument_row.symbol} pnl={pnl:.2f}",
+        )
         await session.commit()
         return position
 
@@ -404,27 +469,14 @@ class OrderOrchestrator:
 
     # ------------------------------------------------------------------- live --
 
-    async def preview_live_order(self, session: AsyncSession, order: OrderRequest) -> dict:
-        """Runs the exact Risk Engine validation and order-construction
-        pipeline a real LIVE order would go through — real TRADING broker
-        account/position state, real spread, real staleness check — but
-        this method contains no call to `BrokerAdapter.create_order`
-        anywhere in its body. That is a structural guarantee, not a flag
-        that could be misconfigured: no code path through this function can
-        ever place a real order, so it is deliberately NOT gated behind
-        `check_live_gates()` — those three gates exist to protect against
-        real execution, and there is nothing here to protect against
-        (docs/15_PRODUCTION_READINESS_REVIEW.md "LIVE Trading Dry Run").
+    async def _assess_live_order(self, session: AsyncSession, order: OrderRequest) -> "LiveAssessment":
+        """Build the LIVE RiskContext from real broker state and validate it.
 
-        Lets an operator verify Risk Engine sizing/limits and order
-        construction work correctly against a real configured broker's real
-        account state *before* ever flipping any of the three LIVE gates —
-        including in `staging`, where `LIVE_TRADING_ENABLED` can never be
-        true at all (`app/main.py`'s boot guard).
+        Shared verbatim by `preview_live_order` and `submit_live_order` so the
+        dry run cannot drift away from what execution actually does — a preview
+        that disagrees with the real path is worse than no preview at all.
+        Contains no call to `create_order`; only the caller executes.
         """
-        if order.order_type != "market":
-            raise ValueError("preview_live_order only supports order_type='market' — LIVE execution itself is a stub (see submit_live_order)")
-
         risk_settings = await get_or_create_risk_settings(session)
         pip = pip_size_for(order.instrument)
 
@@ -481,7 +533,45 @@ class OrderOrchestrator:
             consecutive_loss_stop_count=risk_settings.consecutive_loss_stop_count,
             is_duplicate_idempotency_key=False,
         )
-        result = _engine.validate(ctx)
+        return LiveAssessment(
+            result=_engine.validate(ctx),
+            risk_settings=risk_settings,
+            estimated_entry=estimated_entry,
+            equity=equity,
+            risk_amount=risk_amount,
+            spread_pips=spread_pips,
+            price_stale=price_stale,
+            broker_connected=broker_connected,
+            broker_error=broker_error,
+        )
+
+    async def preview_live_order(self, session: AsyncSession, order: OrderRequest) -> dict:
+        """Runs the exact Risk Engine validation and order-construction
+        pipeline a real LIVE order would go through — real TRADING broker
+        account/position state, real spread, real staleness check — but
+        this method contains no call to `BrokerAdapter.create_order`
+        anywhere in its body. That is a structural guarantee, not a flag
+        that could be misconfigured: no code path through this function can
+        ever place a real order, so it is deliberately NOT gated behind
+        `check_live_gates()` — those three gates exist to protect against
+        real execution, and there is nothing here to protect against
+        (docs/15_PRODUCTION_READINESS_REVIEW.md "LIVE Trading Dry Run").
+
+        Lets an operator verify Risk Engine sizing/limits and order
+        construction work correctly against a real configured broker's real
+        account state *before* ever flipping any of the three LIVE gates —
+        including in `staging`, where `LIVE_TRADING_ENABLED` can never be
+        true at all (`app/main.py`'s boot guard).
+        """
+        if order.order_type != "market":
+            raise ValueError("preview_live_order only supports order_type='market'")
+
+        a = await self._assess_live_order(session, order)
+        result = a.result
+        estimated_entry, equity, risk_amount = a.estimated_entry, a.equity, a.risk_amount
+        spread_pips, price_stale = a.spread_pips, a.price_stale
+        broker_connected, broker_error = a.broker_connected, a.broker_error
+        risk_settings = a.risk_settings
 
         preview = {
             "would_be_approved": result.approved,
@@ -543,16 +633,148 @@ class OrderOrchestrator:
             await session.commit()
             raise LiveTradingDisabled(missing_gates)
 
-        # Real implementation would mirror submit_paper_order's RiskContext assembly
-        # using self._trading_broker.get_account()/get_positions() instead of the
-        # paper tables (note: self._trading_broker, not self._broker — the order
-        # must go to the configured TRADING broker even if a different provider
-        # is used for market data, see docs/15_PRODUCTION_READINESS_REVIEW.md),
-        # then call self._trading_broker.create_order(order) only after RiskEngine
-        # approval. Left minimal here: this path cannot be exercised without a
-        # real funded broker account, which this build environment does not have
-        # (see docs/14_IMPLEMENTATION_PLAN.md "Known gaps").
-        raise LiveTradingDisabled(["LIVE order execution requires a configured, funded broker account"])
+        if order.order_type != "market":
+            # The adapters only build MARKET payloads; a limit/stop request would
+            # otherwise be executed immediately at market. Refuse explicitly.
+            raise ValueError("submit_live_order only supports order_type='market'")
+
+        # Idempotent replay: never let a retried request become a second real
+        # order. Checked before any risk work so a duplicate cannot even reach
+        # the broker.
+        existing = await session.execute(
+            select(LiveOrder).where(LiveOrder.idempotency_key == order.idempotency_key)
+        )
+        dup = existing.scalar_one_or_none()
+        if dup is not None:
+            if dup.status == "rejected":
+                raise RiskRejected(dup.reject_reason or "REJECTED", dup.reject_reason or "rejected")
+            return OrderOutcome(approved=True, order=dup)
+
+        instrument = await get_instrument_by_symbol(session, order.instrument)
+        if instrument is None:
+            raise ValueError(f"unknown instrument {order.instrument}")
+        broker_account = await get_or_create_broker_account(
+            session, self._settings.broker_provider, self._settings.broker_environment
+        )
+
+        # Same assessment the dry run reports, so a preview that says "would
+        # approve" is the same verdict this path acts on.
+        assessment = await self._assess_live_order(session, order)
+        result = assessment.result
+
+        if not result.approved:
+            session.add(
+                LiveOrder(
+                    broker_account_id=broker_account.id,
+                    instrument_id=instrument.id,
+                    direction=order.direction,
+                    size=order.size,
+                    stop_loss=order.stop_loss,
+                    take_profit=order.take_profit,
+                    status="rejected",
+                    reject_reason=result.code,
+                    idempotency_key=order.idempotency_key,
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await _log_event(
+                session, "risk", "warning", f"LIVE order rejected: {result.code}", {"message": result.message}
+            )
+            await write_audit_log(
+                session,
+                "live_order_reject",
+                context={
+                    "instrument": order.instrument,
+                    "direction": order.direction,
+                    "size": order.size,
+                    "reason": result.code,
+                },
+            )
+            await session.commit()
+            raise RiskRejected(result.code or "REJECTED", result.message or "rejected")
+
+        # Approved. Record the intent BEFORE contacting the broker so a crash
+        # between the two leaves evidence that an order may exist upstream,
+        # rather than a silent gap.
+        live_order = LiveOrder(
+            broker_account_id=broker_account.id,
+            instrument_id=instrument.id,
+            direction=order.direction,
+            size=order.size,
+            stop_loss=order.stop_loss,
+            take_profit=order.take_profit,
+            status="submitting",
+            idempotency_key=order.idempotency_key,
+            created_at=datetime.now(UTC),
+        )
+        session.add(live_order)
+        await write_audit_log(
+            session,
+            "live_order_submit",
+            context={
+                "instrument": order.instrument,
+                "direction": order.direction,
+                "size": order.size,
+                "stop_loss": order.stop_loss,
+                "take_profit": order.take_profit,
+                "estimated_entry": assessment.estimated_entry,
+                "idempotency_key": order.idempotency_key,
+            },
+        )
+        await session.commit()
+
+        try:
+            broker_result = await self._trading_broker.create_order(order)
+        except BrokerOrderRejected as exc:
+            live_order.status = "rejected"
+            live_order.reject_reason = str(exc)[:200]
+            await _log_event(session, "order", "error", f"LIVE order rejected by broker: {exc}")
+            await write_audit_log(
+                session, "live_order_broker_reject", context={"instrument": order.instrument, "error": str(exc)[:200]}
+            )
+            await session.commit()
+            raise
+        except BrokerConnectionError as exc:
+            # Outcome genuinely unknown: the request may or may not have reached
+            # the broker. Marked distinctly so it is reconciled by hand rather
+            # than assumed failed and retried into a duplicate position.
+            live_order.status = "unknown"
+            live_order.reject_reason = f"connection error: {str(exc)[:180]}"
+            await _log_event(
+                session, "order", "error",
+                f"LIVE order outcome UNKNOWN (connection error): {order.instrument} — reconcile with the broker",
+            )
+            await write_audit_log(
+                session, "live_order_unknown", context={"instrument": order.instrument, "error": str(exc)[:200]}
+            )
+            await session.commit()
+            raise
+
+        live_order.broker_order_id = broker_result.broker_order_id
+        live_order.status = broker_result.status
+        if not broker_result.success:
+            live_order.reject_reason = broker_result.reject_reason
+        await _log_event(
+            session, "order", "info",
+            f"LIVE order {broker_result.status}: {order.instrument} {order.direction} x{order.size} "
+            f"@ {broker_result.filled_price}",
+        )
+        await write_audit_log(
+            session,
+            "live_order_result",
+            context={
+                "instrument": order.instrument,
+                "status": broker_result.status,
+                "broker_order_id": broker_result.broker_order_id,
+                "filled_price": broker_result.filled_price,
+            },
+        )
+        await _notify(
+            session, "live_order", "LIVE注文が約定しました",
+            f"{order.instrument} {order.direction} {order.size} @ {broker_result.filled_price}",
+        )
+        await session.commit()
+        return OrderOutcome(approved=True, order=live_order)
 
     # ------------------------------------------------------------------ kill --
 

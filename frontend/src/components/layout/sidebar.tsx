@@ -15,11 +15,13 @@ import {
   Settings,
   Activity,
   Globe,
+  HelpCircle,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 export const NAV = [
+  { href: "/help", label: "使い方", icon: HelpCircle },
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/markets", label: "Markets", icon: Globe },
   { href: "/chart", label: "Chart", icon: LineChart },

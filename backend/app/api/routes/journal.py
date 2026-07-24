@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db
 from app.db.models.journal import TradeJournal
 from app.db.models.strategy import Signal
+from app.services.forward_test import build_report
 
 router = APIRouter(tags=["journal"])
 
@@ -154,3 +157,42 @@ async def signal_outcome_breakdown(pair: str | None = None, session: AsyncSessio
             }
         )
     return {"breakdown": breakdown}
+
+
+@router.get("/analytics/forward-test")
+async def forward_test_report(
+    days: int | None = None,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """How the playbook is performing on LIVE paper trades, versus what the
+    23-year backtest predicted (docs — app/services/playbook.py).
+
+    Only counts trades the auto-trader opened: `strategy_code` is stamped on
+    close for those and left null for hand-placed orders, so a discretionary
+    trade can never inflate or depress the strategy's measured record.
+    """
+    stmt = select(TradeJournal).where(
+        TradeJournal.source == "paper",
+        TradeJournal.strategy_code.is_not(None),
+    )
+    if days is not None and days > 0:
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        stmt = stmt.where(TradeJournal.closed_at >= cutoff)
+
+    result = await session.execute(stmt.order_by(TradeJournal.closed_at))
+    trades = list(result.scalars().all())
+
+    rows_by_pair: dict[str, list] = {}
+    for t in trades:
+        rows_by_pair.setdefault(t.pair, []).append(t)
+
+    report = build_report(rows_by_pair, trades)
+    report["window_days"] = days
+    report["strategies"] = sorted({t.strategy_code for t in trades if t.strategy_code})
+    # Exit-reason mix is the fastest way to see a broken exit path: a book with
+    # no "stop loss" rows means brackets are not firing (they previously never did).
+    reasons: dict[str, int] = {}
+    for t in trades:
+        reasons[t.reason or "unknown"] = reasons.get(t.reason or "unknown", 0) + 1
+    report["exit_reasons"] = dict(sorted(reasons.items(), key=lambda kv: -kv[1]))
+    return report

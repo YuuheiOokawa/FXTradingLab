@@ -17,7 +17,15 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.core.redis_client import get_redis
 from app.services.market_data import MarketDataService
-from app.worker.jobs import heartbeat, paper_pending_orders, retention, signal_capture, signal_outcome
+from app.worker.jobs import (
+    heartbeat,
+    paper_brackets,
+    paper_pending_orders,
+    playbook_manage,
+    retention,
+    signal_capture,
+    signal_outcome,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +54,14 @@ async def main() -> None:
     scheduler.add_job(signal_outcome.run, "interval", minutes=20, id="signal_outcome")
     scheduler.add_job(heartbeat.run, "interval", seconds=30, id="heartbeat")
     scheduler.add_job(paper_pending_orders.run, "interval", seconds=10, id="paper_pending_orders")
+    # Stop-loss / take-profit enforcement for open paper positions. Runs at the
+    # same cadence as pending-order fills because an unenforced stop is the one
+    # failure that can turn a bounded loss into an unbounded one.
+    scheduler.add_job(paper_brackets.run, "interval", seconds=10, id="paper_brackets")
+    # Trailing stops / mean-reversion exits for playbook positions
+    # (app/services/playbook.py). Its rules are daily, but it runs every few
+    # minutes so a stop tightens promptly rather than only at the next close.
+    scheduler.add_job(playbook_manage.run, "interval", minutes=5, id="playbook_manage")
     scheduler.start()
 
     market_data = MarketDataService(market_data_broker, redis)

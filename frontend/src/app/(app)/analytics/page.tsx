@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { ForwardTestPanel } from "@/components/analytics/forward-test-panel";
 import { SignalOutcomeTable } from "@/components/analytics/signal-outcome-table";
 import { WinRateChart } from "@/components/analytics/win-rate-chart";
 import { WinRateTable } from "@/components/analytics/win-rate-table";
@@ -39,6 +40,18 @@ export default function AnalyticsPage() {
         <p className="mt-1 text-sm text-muted-foreground">
           どの条件で実際に勝てているかを可視化します。決済済みトレード（バックテスト・Paper・デモ・LIVE）を集計します。
         </p>
+      </div>
+
+      {/* Forward test first: whether the automated strategy is holding up live
+          is the question that decides whether to keep running it at all. */}
+      <div>
+        <h2 className="text-base font-semibold">フォワードテスト（自動売買の実績）</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          23年バックテストの想定どおりに動いているかを、実際のペーパー取引で検証します。
+        </p>
+        <div className="mt-3">
+          <ForwardTestPanel />
+        </div>
       </div>
 
       <Card>

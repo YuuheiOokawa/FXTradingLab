@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -13,7 +14,9 @@ from app.brokers.schemas import Granularity
 from app.core.config import get_settings
 from app.db.models.market import Candle as CandleModel
 from app.db.models.market import Instrument
+from app.services.calibration import MIN_BARS_FOR_CALIBRATION, calibrate, to_dict
 from app.services.market_data import DEFAULT_INSTRUMENT_META, ensure_instruments
+from app.services.playbook import config_for
 
 router = APIRouter(prefix="/instruments", tags=["market"])
 
@@ -107,3 +110,72 @@ async def get_candles(
     count = max(1, min(count, 5000))
     candles = await broker.get_candles(symbol, granularity, count)
     return [c.model_dump(mode="json") for c in candles]
+
+
+@router.get("/{symbol}/calibration")
+async def instrument_calibration(
+    symbol: str,
+    bars: int = 1500,
+    broker: BrokerAdapter = Depends(get_broker),
+) -> dict:
+    """Measure this instrument's character and recommend a playbook style.
+
+    Reproduces the analysis behind the shipped per-pair book
+    (app/services/playbook.py) so a newly added pair can be classified from its
+    own history instead of inheriting whichever rule happened to be written
+    first — the mistake that cost -12,926 pips over 23 years when one trend rule
+    was applied to all four pairs.
+
+    Read-only, and explicitly a hypothesis: the response carries the confidence
+    level, any warnings, and the instruction to backtest before enabling.
+    """
+    bars = max(MIN_BARS_FOR_CALIBRATION, min(bars, 5000))
+    candles = await broker.get_candles(symbol, Granularity.D, bars)
+    closed = [c for c in candles if getattr(c, "is_final", True)]
+    if len(closed) < MIN_BARS_FOR_CALIBRATION:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"only {len(closed)} closed daily bars available for {symbol}; "
+                f"{MIN_BARS_FOR_CALIBRATION} are needed to measure its character"
+            ),
+        )
+
+    df = pd.DataFrame(
+        {
+            "open": [c.open for c in closed],
+            "high": [c.high for c in closed],
+            "low": [c.low for c in closed],
+            "close": [c.close for c in closed],
+        }
+    )
+    result = calibrate(symbol, df)
+    if result is None:
+        raise HTTPException(status_code=422, detail=f"could not calibrate {symbol}")
+
+    payload = to_dict(result)
+    current = config_for(symbol)
+    if current is None:
+        payload["current_playbook"] = None
+    else:
+        matches = current.style == result.recommended_style
+        payload["current_playbook"] = {
+            "style": current.style,
+            "enabled": current.enabled,
+            "adx_min": current.adx_min,
+            "adx_max": current.adx_max,
+            "matches_recommendation": matches,
+            # A disagreement is expected and is not a bug: the configured style
+            # was chosen by backtesting every family on this pair, which beats a
+            # single statistic. On USD/JPY and GBP/JPY the measured character
+            # points one way and the validated result went the other.
+            "note": (
+                "configured style matches the measured character"
+                if matches
+                else (
+                    "configured style differs from the statistical recommendation — the "
+                    "configured one was selected by full backtest, which takes precedence"
+                )
+            ),
+        }
+    return payload

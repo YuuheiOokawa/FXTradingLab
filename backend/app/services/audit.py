@@ -32,6 +32,12 @@ ACTIONS = frozenset(
         "live_order_submit",
         "live_order_reject",
         "live_order_result",
+        # The broker refused the order outright.
+        "live_order_broker_reject",
+        # The connection dropped mid-submission, so the order MAY exist upstream.
+        # Audited under its own action because it is the one outcome that needs a
+        # human to reconcile against the broker rather than a retry.
+        "live_order_unknown",
     }
 )
 

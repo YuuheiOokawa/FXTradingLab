@@ -90,6 +90,184 @@ npm install
 npm run dev                             # :3000, expects the backend on :8000
 ```
 
+## Local development on Windows (no Docker)
+
+If Docker isn't available, the app runs directly against a local PostgreSQL
+service, a portable Redis, a Python venv, and the Next.js dev server. This is
+the exact setup this checkout was brought up under.
+
+Prerequisites: PostgreSQL (any 16/17), Node.js 20+, Python 3.12+ (3.14 works).
+
+### One-time setup
+
+```powershell
+# 1. Database — create the fxlab role and both databases (run as the postgres
+#    superuser; adjust the psql path to your install).
+$env:PGPASSWORD='<postgres-password>'
+$psql = "C:\Program Files\PostgreSQL\17\bin\psql.exe"
+& $psql -U postgres -h localhost -c "CREATE ROLE fxlab LOGIN PASSWORD 'fxlab';"
+& $psql -U postgres -h localhost -c "CREATE DATABASE fxlab OWNER fxlab;"
+& $psql -U postgres -h localhost -c "CREATE DATABASE fxlab_test OWNER fxlab;"
+
+# 2. Redis — no Windows-native Redis, so use the portable build
+#    (Memurai's MSI custom actions fail without SYSTEM's TEMP dirs). Placed at
+#    ..\tools\redis\ so start-local.ps1 finds it; adjust that path if you move it.
+#    Any Redis reachable at localhost:6379 works just as well.
+
+# 3. Backend — venv + deps + migrations. (redis-server must be running for
+#    nothing here, but the API/worker need it at runtime.)
+cd backend
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m alembic upgrade head          # against fxlab
+# test DB (once): point DATABASE_URL at fxlab_test, then upgrade head again.
+
+# 4. Frontend
+cd ..\frontend
+npm install
+```
+
+The `backend/.env` and `frontend/.env.local` in this checkout are already set
+for localhost (Postgres + Redis on localhost, `APP_ENV=development` so auth and
+the /login gate are off, built-in mock broker). One gotcha: `MARKET_DATA_PROVIDER`
+is typed as an optional Literal, so a **blank** `MARKET_DATA_PROVIDER=` line
+(as in `.env.example`) fails startup validation — leave the key absent, not empty.
+
+### Running
+
+```powershell
+# From the repo root — opens Redis, API, worker, and frontend in four windows:
+.\start-local.ps1
+```
+
+- Frontend: http://localhost:3001 (3000 is reserved for another app on this
+  machine, so the frontend's `dev` script binds 3001)
+- API docs: http://localhost:8000/docs
+- Health/readiness: http://localhost:8000/ready (DB + Redis + broker checks)
+
+Or start each piece by hand (four terminals):
+
+```powershell
+# 1. Redis
+..\tools\redis\Redis-8.8.0-Windows-x64-msys2\redis-server.exe --port 6379 --save "" --appendonly no
+# 2. API            (in backend/)
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000
+# 3. Worker         (in backend/)
+.\.venv\Scripts\python.exe -m app.worker.main
+# 4. Frontend       (in frontend/) — binds :3001 (see package.json "dev")
+npm run dev
+```
+
+The WebSocket price stream connects straight to the backend on `:8000`
+(`NEXT_PUBLIC_WS_URL`), independent of the frontend's own port, so only the
+frontend port changed.
+
+## Automated trading (per-instrument playbook)
+
+`app/services/playbook.py` gives **each instrument the strategy its own price
+behaviour calls for**, because one shared rule loses: across ~23 years of real
+daily data (2003-2026) a single EMA trend-follower applied to all four pairs
+returned **-12,926 pips (PF 0.81)**, while the per-pair book below returned
+**+14,859 pips (PF 1.64)** and was profitable in every nested 5/10/15/20/23-year
+window.
+
+| Instrument | Style | Exit | Regime gate | Stop / trail |
+|---|---|---|---|---|
+| USD/JPY | 20-day Donchian breakout | ATR trailing stop | ADX ≥ 25 | 3 / 4 ATR |
+| EUR/JPY | EMA 10/30 cross, EMA200-filtered | ATR trailing stop | ADX ≥ 15 | 2 / 3 ATR |
+| GBP/JPY | Bollinger 2.5σ fade, **long only** | back to the 20-day mean, 30-day cap | ADX ≤ 30 | 3 ATR |
+| EUR/USD | RSI fade | back to the mean | — | **disabled** — its edge is inside the noise |
+
+**Parameters are chosen by multi-era survival, not by best total return.** Extending
+USD/JPY history back to 1996 produced a stretch (1996-2003) never used to select
+anything — and the original parameters, tuned on 2003-2026, earned PF 1.29 there
+and **PF 0.76, an outright loss, on the unused years**. The settings above are
+profitable in every era tested:
+
+| | early era | middle | recent |
+|---|---|---|---|
+| USD/JPY | 1996-2003 PF 1.39 | 2003-2015 PF 1.61 | 2015-2026 PF 1.17 |
+| EUR/JPY | 2003-2010 PF 1.00 | 2010-2018 PF 2.58 | 2018-2026 PF 2.07 |
+| GBP/JPY | 2003-2010 PF 2.09 | 2010-2018 PF 1.20 | 2018-2026 PF 2.74 |
+
+Pooled across the three pairs this trades a slightly lower headline return for a
+**36% smaller worst drawdown** (-2,073 → -1,329 pips) and a higher win rate
+(50.0% → 53.2%). Once 1996-2003 was used to pick parameters it stopped being an
+independent test, so only live forward testing produces evidence that was never
+fitted to.
+
+Position size is derived from `max_risk_per_trade_pct` so that being stopped out
+costs the same fraction of equity on every pair (`app/services/position_sizing.py`),
+and is halved when volatility spikes to twice its baseline. Stops and targets on
+paper positions are enforced by `app/worker/jobs/paper_brackets.py`; trailing and
+mean-reversion exits by `app/worker/jobs/playbook_manage.py`.
+
+Enable it in **Settings → auto_mode = `full_auto`**. It trades the PAPER account
+only — LIVE order submission is never wired to an automatic loop.
+
+Live results are scored against the backtest's expectations on the **Analytics**
+page (`GET /api/v1/analytics/forward-test`), counting only auto-trader trades so a
+hand-placed order cannot flatter the record.
+
+> This is a modest edge, not a money printer. The same 23-year study shows
+> multi-year stretches (2013-2020) where the approach bleeds. Forward-test on
+> paper before risking anything real.
+
+### Connecting real market data (OANDA practice)
+
+The built-in simulator is a seeded random walk — fine for exercising the app,
+useless for judging a strategy. **Forward-test numbers only mean something once
+real prices are connected.** Create a free OANDA **practice** account, then copy
+what you need from `backend/.env.oanda.example` into `backend/.env`:
+
+```
+BROKER_PROVIDER=oanda
+OANDA_API_TOKEN=...
+OANDA_ACCOUNT_ID=...
+OANDA_ENVIRONMENT=practice
+```
+
+Verify before trusting it — read-only, never places an order:
+
+```bash
+cd backend
+python -m scripts.check_oanda
+```
+
+It checks credentials, spreads, that daily history is deep enough for the
+playbook's EMA200 (~260 closed bars), that the still-forming bar is flagged
+`complete: false` (the look-ahead guard depends on it), and that each pair's
+playbook evaluates. Note the simulator marks every candle final, so that guard
+is only genuinely exercised against a real feed.
+
+Then set **auto_mode = `full_auto`** and let it run. Daily rules trade rarely, so
+expect days-to-weeks before the Analytics forward test has enough closed trades
+to say anything (it labels anything under 20 trades "too early").
+
+### Real-money execution: built, gated, and not automated
+
+`OrderOrchestrator.submit_live_order` is fully implemented — Risk Engine
+validation against real broker account state, idempotent replay protection, and
+distinct handling for a broker rejection versus a dropped connection (the latter
+is recorded as `unknown`, never `rejected`, because a retry could otherwise open
+a duplicate position).
+
+It is reachable **only** through the manual `POST /api/v1/live/orders` endpoint,
+and only when all three gates are open:
+
+1. `LIVE_TRADING_ENABLED=true` in the environment,
+2. `live_trading_admin_enabled` in Settings,
+3. `confirm_live: true` on the individual request.
+
+**No automatic code path can call it.** The auto-trader submits PAPER orders
+exclusively. That is not a convention — `tests/test_live_execution.py` parses the
+auto-trader's AST, scans every worker job, and drives a full evaluation cycle
+with all three gates open, failing if a real order is ever attempted.
+
+Use `POST /api/v1/live/orders/preview` first: it runs the identical risk
+assessment (literally the same `_assess_live_order` call) with no execution path
+in its body, so a "would approve" preview is the same verdict execution acts on.
+
 ## Project layout
 
 ```

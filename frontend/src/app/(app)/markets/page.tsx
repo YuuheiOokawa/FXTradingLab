@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AddInstrumentForm } from "@/components/markets/add-instrument-form";
+import { CalibrationPanel } from "@/components/markets/calibration-panel";
 import { InstrumentTable } from "@/components/markets/instrument-table";
 import type { Instrument } from "@/types/api";
 
@@ -29,6 +30,17 @@ export default function MarketsPage() {
         </CardHeader>
         <CardContent>
           <AddInstrumentForm />
+        </CardContent>
+      </Card>
+
+      {/* A newly added pair should not inherit whichever strategy happened to be
+          written first — that is exactly what lost money over 23 years. */}
+      <Card>
+        <CardHeader>
+          <CardTitle>値動きの性格診断（どの戦略が向くか）</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <CalibrationPanel symbols={watched.map((i) => i.symbol)} />
         </CardContent>
       </Card>
 
